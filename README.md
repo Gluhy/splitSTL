@@ -15,7 +15,7 @@ auto-generate dowel-pin joints to glue them back together.
 - **Dowel joints** — auto-places **perpendicular** pins on each seam so the parts actually slide together and align. Pin diameter is auto-fitted to wall thickness; seams too thin for a pin fall back to a flat glue joint.
 - **Interactive 3D pin editing** — toggle edit mode to add / move / delete pins on the active cut plane.
 - **Mesh auto-repair + diagnostics** — welds duplicate vertices, drops degenerate/duplicate triangles, and fills small holes. If a mesh still isn't a valid 2-manifold, it tells you *why* (boundary edges / non-manifold edges / flipped normals) instead of failing with a cryptic error.
-- **Piece numbering** (optional) — engraves each piece's grid index (e.g. `0-1-2`) into a cut face, and shows the same label in the 3D view, so you can tell parts apart and reassemble them.
+- **Piece numbering** (optional) — drills each piece's grid index (e.g. `0-1-2`) as a 3×5 dot-matrix into a cut face (print-friendly dots, auto-fitted to the face), and shows the readable number in the 3D view, so you can tell parts apart and reassemble them.
 - **Exploded view** + per-piece "fits / too big" check.
 - **ZIP export** — one binary STL per piece.
 

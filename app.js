@@ -240,13 +240,18 @@ $('cut').onclick = async () => {
   $('cut').disabled = false;
 };
 function makeLabelSprite(text) {
-  const cw = 256, ch = 128, cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = 'rgba(20,22,26,0.72)'; ctx.fillRect(0, 0, cw, ch);
-  ctx.font = 'bold 70px ui-monospace, monospace'; ctx.fillStyle = '#fff';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, cw / 2, ch / 2 + 4);
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
-  spr.scale.set(44, 22, 1); spr.renderOrder = 999;
+  const fs = 96, pad = Math.round(fs * 0.28), font = `600 ${fs}px system-ui, -apple-system, sans-serif`;
+  const cv = document.createElement('canvas'), ctx = cv.getContext('2d');
+  ctx.font = font;
+  cv.width = Math.ceil(ctx.measureText(text).width) + pad * 2; cv.height = fs + pad * 2;
+  ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';        // resize wyczyscil kontekst
+  const x = cv.width / 2, y = cv.height / 2;
+  ctx.lineJoin = 'round'; ctx.lineWidth = fs * 0.16; ctx.strokeStyle = 'rgba(8,10,14,0.85)';
+  ctx.strokeText(text, x, y);                                                     // obrys -> czytelne na kazdym kolorze
+  ctx.fillStyle = '#fff'; ctx.fillText(text, x, y);
+  const tex = new THREE.CanvasTexture(cv); tex.anisotropy = 4;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  const mmH = 11; spr.scale.set(mmH * cv.width / cv.height, mmH, 1); spr.renderOrder = 999;
   return spr;
 }
 function pieceLabel(name) { return name.replace(/^piece_/, '').replace(/\.stl$/, ''); }
