@@ -43,14 +43,15 @@ function frame(obj) {
 
 // ----- stan -----
 const S = { geometry: null, plan: null, sd: null, pins: new Map(),
-            pieces: null, pieceMeshes: [], mode: 'view', activeKey: null,
+            pieces: null, pieceMeshes: [], pieceLabels: [], mode: 'view', activeKey: null,
             dragging: null, selected: null };
 
 function opts() {
   return { build: [+$('bx').value, +$('by').value, +$('bz').value],
     margin: +$('margin').value, connector: $('connector').value,
     pinD: +$('pinD').value, pinLen: +$('pinLen').value,
-    clearance: +$('clearance').value, minWall: +$('minWall').value, spacing: +$('spacing').value };
+    clearance: +$('clearance').value, minWall: +$('minWall').value, spacing: +$('spacing').value,
+    number: $('number').checked };
 }
 const reqSdFor = d => d / 2 + +$('clearance').value + +$('minWall').value;
 const halfLen = () => +$('pinLen').value / 2;
@@ -238,20 +239,38 @@ $('cut').onclick = async () => {
   } catch (err) { log('BLAD: ' + err.message); console.error(err); }
   $('cut').disabled = false;
 };
+function makeLabelSprite(text) {
+  const cw = 256, ch = 128, cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(20,22,26,0.72)'; ctx.fillRect(0, 0, cw, ch);
+  ctx.font = 'bold 70px ui-monospace, monospace'; ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, cw / 2, ch / 2 + 4);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false, transparent: true }));
+  spr.scale.set(44, 22, 1); spr.renderOrder = 999;
+  return spr;
+}
+function pieceLabel(name) { return name.replace(/^piece_/, '').replace(/\.stl$/, ''); }
 function showPieces() {
   modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = false;
-  pieceGroup.clear(); S.pieceMeshes = []; const list = $('pieceList'); list.innerHTML = '';
+  pieceGroup.clear(); S.pieceMeshes = []; S.pieceLabels = []; const list = $('pieceList'); list.innerHTML = '';
   S.pieces.forEach((p, i) => {
     const mesh = new THREE.Mesh(p.geometry, new THREE.MeshStandardMaterial({ color: PALETTE[i % PALETTE.length], flatShading: true }));
     p.geometry.computeBoundingBox();
-    mesh.userData.center = p.geometry.boundingBox.getCenter(new THREE.Vector3());
+    const center = p.geometry.boundingBox.getCenter(new THREE.Vector3());
+    mesh.userData.center = center;
     pieceGroup.add(mesh); S.pieceMeshes.push(mesh);
+    const spr = makeLabelSprite(pieceLabel(p.name)); spr.userData.center = center; spr.position.copy(center);
+    pieceGroup.add(spr); S.pieceLabels.push(spr);
     const li = document.createElement('div'); li.className = 'piece' + (p.fits ? '' : ' bad');
-    li.textContent = `${p.fits ? '✓' : '⚠'} ${p.name}  ${p.size.map(s => s.toFixed(0)).join('×')} mm`; list.appendChild(li);
+    li.textContent = `${p.fits ? '✓' : '⚠'} ${pieceLabel(p.name)}  ${p.size.map(s => s.toFixed(0)).join('×')} mm`; list.appendChild(li);
   });
   frame(pieceGroup); $('explode').value = 0;
 }
-$('explode').oninput = () => { const s = +$('explode').value; S.pieceMeshes.forEach(m => m.position.copy(m.userData.center).multiplyScalar(s)); };
+$('explode').oninput = () => {
+  const s = +$('explode').value;
+  S.pieceMeshes.forEach(m => m.position.copy(m.userData.center).multiplyScalar(s));
+  S.pieceLabels.forEach(l => l.position.copy(l.userData.center).multiplyScalar(1 + s));   // etykieta przy wysrodkowanym kawalku
+};
 $('download').onclick = () => {
   const exp = new STLExporter(), files = {};
   for (const p of S.pieces) { const dv = exp.parse(new THREE.Mesh(p.geometry), { binary: true }); files[p.name] = new Uint8Array(dv.buffer ?? dv); }

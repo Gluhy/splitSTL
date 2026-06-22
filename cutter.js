@@ -293,6 +293,69 @@ function tongueGroove(cell, ax, coord, faceGap, width, clearance, depth) {
 }
 
 // --------------------------------------------------------------------------- //
+// Numerowanie kawalkow — wygrawerowany (wglebiony) numer siatki na scianie ciecia
+// --------------------------------------------------------------------------- //
+let FONT = null;
+async function getFont() {
+  if (FONT) return FONT;
+  const [{ FontLoader }, fontJson] = await Promise.all([
+    import('three/addons/loaders/FontLoader.js'),
+    import('./assets/helvetiker_regular.typeface.json'),
+  ]);
+  FONT = new FontLoader().parse(fontJson.default ?? fontJson);
+  return FONT;
+}
+// kontury liter -> SimplePolygon[] (EvenOdd zrobi dziury w 0,8 itd.)
+function labelContours(font, label) {
+  const shapes = font.generateShapes(label, 1);   // rozmiar 1, skala pozniej
+  const contours = []; let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const push = pts => {
+    const c = [];
+    for (const p of pts) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; c.push([p.x, p.y]); }
+    if (c.length >= 3) contours.push(c);
+  };
+  for (const sh of shapes) { push(sh.getPoints(6)); for (const h of sh.holes) push(h.getPoints(6)); }
+  return { contours, w: maxX - minX, h: maxY - minY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+}
+// plaska sciana ciecia kawalka: { ax, coord, into } (into = w glab bryly)
+function pickEngraveFace(idx, cuts, lo, hi) {
+  for (let ax = 0; ax < 3; ax++) {
+    if (!cuts[ax].length) continue;
+    const e = [lo[ax], ...cuts[ax], hi[ax]];
+    if (idx[ax] > 0) return { ax, coord: e[idx[ax]], into: 1 };
+    if (idx[ax] < cuts[ax].length) return { ax, coord: e[idx[ax] + 1], into: -1 };
+  }
+  return null;
+}
+// wygraweruj `label` na scianie `face`; zwraca nowy manifold lub niezmieniony m
+function engrave(m, label, face, bounds, font, depth = 0.8) {
+  const { CrossSection, Manifold } = wasm;
+  const [au, av] = [0, 1, 2].filter(a => a !== face.ax);
+  const faceW = bounds.max[au] - bounds.min[au], faceH = bounds.max[av] - bounds.min[av];
+  const L = labelContours(font, label);
+  if (!L.contours.length || L.w <= 0 || L.h <= 0) return m;
+  let s = Math.min(Math.max(Math.min(faceW, faceH) * 0.3, 4), 16) / L.h;   // wys. ~30% mniejszego boku
+  s = Math.min(s, faceW * 0.8 / L.w, faceH * 0.8 / L.w);                   // ale zmiesc szerokosc
+  if (!(s > 0)) return m;
+  const contours = L.contours.map(c => c.map(([x, y]) => [(x - L.cx) * s, (y - L.cy) * s]));
+  let solid;
+  try { const cs = CrossSection.ofPolygons(contours, 'EvenOdd'); solid = cs.extrude(depth); cs.delete(); }
+  catch { return m; }
+  const ez = new THREE.Vector3().setComponent(face.ax, face.into);        // baza prawoskretna: z->w glab
+  const ex = new THREE.Vector3().setComponent(au, 1);
+  const ey = new THREE.Vector3().crossVectors(ez, ex);
+  const pos = new THREE.Vector3();
+  pos.setComponent(face.ax, face.coord);
+  pos.setComponent(au, (bounds.min[au] + bounds.max[au]) / 2);
+  pos.setComponent(av, (bounds.min[av] + bounds.max[av]) / 2);
+  const M = new THREE.Matrix4().makeBasis(ex, ey, ez).setPosition(pos);
+  const stamp = solid.transform(mat4(M)); solid.delete();
+  let res; try { res = Manifold.difference(m, stamp); } catch { stamp.delete(); return m; }
+  stamp.delete();
+  return res;
+}
+
+// --------------------------------------------------------------------------- //
 // Ciecie + zlacza
 // pinsByPlane: Map(planeKey -> [{x,y,z,dir}])
 // --------------------------------------------------------------------------- //
@@ -378,13 +441,21 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
     log(`Zlacza: ${nDowel} kolkow, ${nTng} pioro-wpust${nThin ? `, ${nThin} styk za cienki (klej)` : ''}`);
   }
 
-  const out = [];
-  for (const [key, m] of [...cells].sort()) {
+  const font = opts.number ? await getFont().catch(e => { log('Numerowanie pominiete: ' + (e.message || e)); return null; }) : null;
+  const out = []; let nEng = 0;
+  for (const [key, m0] of [...cells].sort()) {
+    let m = m0;
     if (m.isEmpty()) { m.delete(); continue; }
-    const b = manifoldBounds(m), size = [0, 1, 2].map(a => b.max[a] - b.min[a]);
+    const b = manifoldBounds(m);
+    if (font) {                                   // wytlocz numer siatki (np. "0-1-2") na scianie ciecia
+      const face = pickEngraveFace(key.split(',').map(Number), cuts, lo, hi);
+      if (face) { const m2 = engrave(m, key.replace(/,/g, '-'), face, b, font); if (m2 !== m) { m.delete(); m = m2; nEng++; } }
+    }
+    const size = [0, 1, 2].map(a => b.max[a] - b.min[a]);   // grawer jest wglebny -> bbox bez zmian
     out.push({ name: `piece_${key.replace(/,/g, '-')}.stl`, geometry: manifoldToGeometry(m), size, fits: size.every((s, a) => s <= usable[a] + 1e-3) });
     m.delete();
   }
+  if (font) log(`Numery wygrawerowane: ${nEng}/${out.length} kawalkow`);
   log(`Gotowe: ${out.length} kawalkow`);
   return out;
 }
