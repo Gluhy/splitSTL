@@ -174,10 +174,38 @@ function highlightActive() {
   const edit = S.mode === 'edit';
   planeGroup.children.forEach(m => {
     const active = m.userData.key === S.activeKey;
-    m.material.opacity = active ? (edit ? 0.34 : 0.26) : (edit ? 0.04 : 0.1);   // in edit mode dim the rest, highlight the active one
-    if (m.userData.edge) m.userData.edge.material.opacity = active ? 0.9 : (edit ? 0.15 : 0.35);
+    m.visible = active || !edit;                                               // while editing show only the active plane
+    m.material.opacity = active ? (edit ? 0.34 : 0.26) : 0.1;
+    if (m.userData.edge) m.userData.edge.material.opacity = active ? 0.9 : 0.35;
   });
-  buildSection();
+  buildSection(); buildCutLines(); updatePinVisibility();
+}
+// While editing, show only the pins on the active plane — hide the ones on other planes/axes.
+function updatePinVisibility() {
+  const edit = S.mode === 'edit';
+  for (const [key, arr] of S.pins) { const show = !edit || key === S.activeKey; for (const p of arr) { p.mesh.visible = show; p.arrow.visible = show; } }
+}
+
+// Where the OTHER (perpendicular) cut planes cross the active plane — piece borders; don't put a pin on them.
+const cutLines = new THREE.LineSegments(new THREE.BufferGeometry(),
+  new THREE.LineDashedMaterial({ color: 0xff3df0, transparent: true, opacity: 0.9, depthTest: false, dashSize: 3, gapSize: 2 }));
+cutLines.renderOrder = 996; cutLines.visible = false; scene.add(cutLines);
+function buildCutLines() {
+  const pl = (S.mode === 'edit' && S.plan) ? activePlaneObj() : null;
+  if (!pl) { cutLines.visible = false; return; }
+  const ax = pl.userData.axis, coord = pl.userData.coord, { lo, hi, cuts } = S.plan, pts = [];
+  const inPlane = [0, 1, 2].filter(a => a !== ax);
+  for (const a of inPlane) {                                   // perpendicular cuts along this in-plane axis...
+    const b = inPlane.find(x => x !== a);                      // ...draw a line spanning the other in-plane axis
+    for (const c of cuts[a]) {
+      const p0 = [0, 0, 0], p1 = [0, 0, 0];
+      p0[ax] = p1[ax] = coord; p0[a] = p1[a] = c; p0[b] = lo[b]; p1[b] = hi[b];
+      pts.push(...p0, ...p1);
+    }
+  }
+  cutLines.geometry.dispose();
+  cutLines.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  cutLines.computeLineDistances(); cutLines.visible = pts.length > 0;
 }
 
 // Section outline: the contour where the active plane intersects the model mesh.
@@ -316,7 +344,7 @@ function projectToActivePlane() {
 canvas.addEventListener('pointerdown', e => {
   if (S.mode !== 'edit' || !S.plan) return;
   pickNDC(e);
-  const hm = ray.intersectObjects(pinGroup.children, false)[0];
+  const hm = ray.intersectObjects(pinGroup.children, false).find(h => h.object.visible);   // ignore hidden pins (other planes)
   if (hm) { const ref = findPin(hm.object); if (!ref) return;
     if (e.button === 2) removePin(ref); else { selectPin(ref); S.dragging = ref; controls.enabled = false; } return; }
   const proj = projectToActivePlane();
@@ -337,7 +365,7 @@ canvas.addEventListener('pointermove', e => {
     const p = S.dragging; p.x = proj.hit.x; p.y = proj.hit.y; p.z = proj.hit.z; updatePinVisual(p); ghost.hide(); return;
   }
   if (!S.plan) return;
-  const overPin = ray.intersectObjects(pinGroup.children, false).length > 0;   // over an existing pin -> no preview
+  const overPin = ray.intersectObjects(pinGroup.children, false).some(h => h.object.visible);   // over a visible pin -> no preview
   const proj = overPin ? null : projectToActivePlane();
   if (proj) { S.lastHover = { hit: proj.hit.clone(), axis: proj.axis, ox: e.offsetX, oy: e.offsetY }; ghost.show(proj.hit, proj.axis, e.offsetX, e.offsetY); }
   else ghost.hide();

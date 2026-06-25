@@ -23,9 +23,7 @@ You found a great big model, but it's taller than your printer. The usual fix â€
 
 ## Screenshots
 
-| Live section + pin editing | Exploded result + stats |
-|---|---|
-| ![Editing pins on the live cross-section](docs/edit.png) | ![Exploded pieces with stat boxes](docs/pieces.png) |
+![Editing pins on the live cross-section, with the section outline and other cut lines](docs/edit.png)
 
 ## Features
 
