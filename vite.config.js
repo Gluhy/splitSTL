@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: './',                                   // wzgledne sciezki -> dziala w podkatalogu GH Pages
-  optimizeDeps: { exclude: ['manifold-3d'] },   // nie pre-bundluj WASM-owego loadera
+  base: './',                                   // relative paths -> works in a GH Pages subdirectory
+  optimizeDeps: { exclude: ['manifold-3d'] },   // don't pre-bundle the WASM loader
   assetsInclude: ['**/*.wasm'],
   resolve: {
     alias: [{ find: /^three\/addons\//, replacement: 'three/examples/jsm/' }],

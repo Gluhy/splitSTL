@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>STL Cutter — tnij duże modele pod swoją drukarkę</title>
+<title>STL Cutter — split big models to fit your printer</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -22,84 +22,111 @@
   .primary { background: #2d6cdf; border-color: #2d6cdf; }
   button:disabled { opacity: .45; cursor: default; }
   button.on { background: #37d67a; border-color: #37d67a; color: #06210f; }
+  .sizes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .sizes button { width: auto; flex: 1 1 auto; min-width: 34px; padding: 5px 0; margin: 0; font-size: 12px; font-weight: 600; }
   hr { border: none; border-top: 1px solid #262a31; margin: 16px 0; }
   #log { margin-top: 10px; font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: #8b95a1;
          max-height: 22vh; overflow-y: auto; }
   #pieceList { margin-top: 8px; display: grid; gap: 3px; }
-  .piece { font: 12px/1.3 ui-monospace, monospace; color: #9fb3a6; }
+  .piece { font: 12px/1.3 ui-monospace, monospace; color: #9fb3a6; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+  .piece:hover { background: #232a24; color: #ffe066; }
   .piece.bad { color: #ff8a8a; }
+  #stats { margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  #stats:empty { display: none; }
+  .stat { background: #1d2026; border: 1px solid #2f343c; border-radius: 6px; padding: 8px 6px; text-align: center; }
+  .stat b { display: block; font-size: 19px; font-weight: 700; color: #e6e8ea; line-height: 1.1; }
+  .stat span { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: #9aa3ad; }
+  .stat.ok b { color: #37d67a; } .stat.warn b { color: #ffb454; } .stat.off b { color: #6b7785; }
   main { position: relative; }
   canvas { display: block; }
   .hint { position: absolute; left: 12px; bottom: 10px; font-size: 11px; color: #5c6671; }
+  #ghostTip { position: absolute; pointer-events: none; display: none; padding: 3px 7px; border-radius: 5px;
+              font: 11px/1.35 ui-monospace, monospace; background: rgba(13,16,20,.92); border: 1px solid #2f6f4a;
+              color: #cfe9d8; white-space: nowrap; transform: translateY(-50%); z-index: 5; }
+  #ghostTip.bad { color: #ffb4b4; border-color: #7a3030; }
 </style>
 </head>
 <body>
 <aside>
   <h1>STL Cutter</h1>
-  <span class="badge">100% w przeglądarce — plik nie wychodzi na serwer</span>
+  <span class="badge">100% in your browser — files never leave your device</span>
 
-  <label>Plik STL</label>
-  <input type="file" id="file" accept=".stl">
+  <label title="Load a watertight STL. You can also drag & drop it onto the 3D view.">STL file</label>
+  <input type="file" id="file" accept=".stl" title="Load a watertight STL. You can also drag & drop it onto the 3D view.">
 
-  <label>Drukarka / pole robocze</label>
-  <select id="preset"></select>
-  <div class="row3" style="margin-top:6px">
+  <label title="Printer build volume X / Y / Z (mm). The model is split so every piece fits inside (minus margin).">Printer / build volume</label>
+  <select id="preset" title="Pick your printer to fill in the build volume, or choose Custom and type your own X / Y / Z."></select>
+  <div class="row3" style="margin-top:6px" title="Build volume X / Y / Z in mm. Each cut piece must fit inside (minus margin).">
     <input type="number" id="bx" value="256"><input type="number" id="by" value="256"><input type="number" id="bz" value="256">
   </div>
 
-  <label>Typ złącza</label>
-  <select id="connector">
-    <option value="auto" selected>auto — pióro-wpust / kołek wg grubości</option>
-    <option value="tongue">pióro-wpust wzdłuż szwu (eksperymentalne)</option>
-    <option value="dowel">dowel — otwory + ręcznie kołek</option>
-    <option value="plug">plug — wypust + gniazdo</option>
-    <option value="none">brak — płaski styk</option>
+  <label title="How the pieces join at a seam.">Connector type</label>
+  <select id="connector" title="auto = dowel where the wall is thick enough, otherwise a flat glue joint · dowel = a hole on both sides (insert your own rod) · plug = printed peg + socket · none = plain flat butt joint.">
+    <option value="auto" selected>auto — dowel by wall thickness / flat butt</option>
+    <option value="dowel">dowel — holes + your own rod</option>
+    <option value="plug">plug — peg + socket</option>
+    <option value="none">none — flat butt joint</option>
   </select>
 
   <div class="row3">
-    <div><label>Ø kołka</label><input type="number" id="pinD" value="5" step="0.5"></div>
-    <div><label>Długość</label><input type="number" id="pinLen" value="14"></div>
-    <div><label>Luz</label><input type="number" id="clearance" value="0.15" step="0.05"></div>
+    <div title="Pin / dowel diameter (mm). Auto mode treats this as the maximum and shrinks it to fit the wall; manual mode uses it exactly."><label>Pin Ø</label><input type="number" id="pinD" value="5" step="0.5"></div>
+    <div title="Total pin length (mm), centered on the seam — half reaches into each piece."><label>Length</label><input type="number" id="pinLen" value="14"></div>
+    <div title="Gap between pin and hole (mm) for a sliding fit. Bigger = looser, easier to assemble."><label>Clearance</label><input type="number" id="clearance" value="0.15" step="0.05"></div>
   </div>
   <div class="row3">
-    <div><label>Margines</label><input type="number" id="margin" value="2"></div>
-    <div><label>Min. ścianka</label><input type="number" id="minWall" value="1.2" step="0.1"></div>
-    <div><label>Odstęp</label><input type="number" id="spacing" value="40"></div>
+    <div title="Empty border kept inside the build volume (mm) so pieces fit with room to spare."><label>Margin</label><input type="number" id="margin" value="2"></div>
+    <div title="Minimum wall of material left around a pin (mm). Seams thinner than this get no pin (flat glue joint instead)."><label>Min. wall</label><input type="number" id="minWall" value="1.2" step="0.1"></div>
+    <div title="Target distance between auto-placed pins along a seam (mm)."><label>Spacing</label><input type="number" id="spacing" value="40"></div>
   </div>
 
-  <button class="primary" id="plan" disabled>1 · Zaplanuj cięcia</button>
+  <button class="primary" id="plan" disabled title="Work out the cut planes and auto-place dowel pins. Run this first, then edit pins if you want.">1 · Plan cuts</button>
 
   <hr>
-  <button id="editToggle" disabled>Edycja pinów: wył</button>
-  <label>Aktywna płaszczyzna</label>
-  <select id="activePlane"></select>
-  <p class="hint" style="position:static;margin:6px 0 0">LPM = zaznacz/dodaj/przeciągnij · PPM = usuń. Zielony = zmieści się, czerwony = za cienko.</p>
+  <button id="editToggle" disabled title="Turn on editing to add / move / delete pins by hand on the active cut plane.">Edit pins: off</button>
+  <label title="The cut plane you're editing. The model is sectioned here so you can see inside, and clicks add pins on it.">Active plane</label>
+  <select id="activePlane" title="Switch the cut plane you're editing / sectioning."></select>
+
+  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:10px 0 4px"
+         title="Off: the pin Ø is auto-fitted to the wall thickness. On: every new pin uses the exact Ø you pick, so you can mix sizes.">
+    <input type="checkbox" id="manualD" style="width:auto;margin:0"> Manual pin Ø (no auto-fit)
+  </label>
+  <div id="manualBox" style="display:none">
+    <div class="sizes" id="quickSizes"></div>
+    <div class="hint" style="position:static;margin:6px 0 0">Pick a Ø or change it with <b>Alt+scroll</b> over the model (scroll alone = zoom). Red circle/pin = too thin, but you can still place it.</div>
+  </div>
+
+  <p class="hint" style="position:static;margin:8px 0 0">While editing, the model is shown as a section through the active plane — you can see inside. The circle under the cursor shows Ø and whether it fits. LMB = select/add/drag · RMB = delete.</p>
 
   <div id="pinPanel" style="display:none;margin-top:10px;padding:8px;border:1px solid #2f343c;border-radius:6px">
-    <div style="font-size:11px;color:#9aa3ad;margin-bottom:4px">Zaznaczony pin — kąt 3D</div>
-    <label>Kąt pochylenia</label>
+    <div style="font-size:11px;color:#9aa3ad;margin-bottom:4px">Selected pin</div>
+    <label title="Diameter of this pin (mm).">Pin Ø</label>
+    <input type="range" id="pinSize" min="2.5" max="20" step="0.5" value="5">
+    <label title="Tilt this pin away from straight-into-the-cut, to aim it into thicker material.">Tilt angle</label>
     <input type="range" id="tilt" min="0" max="70" step="1" value="0">
-    <label>Obrót</label>
+    <label title="Spin the tilt direction around the cut normal (which way the pin leans).">Rotation</label>
     <input type="range" id="az" min="0" max="359" step="1" value="0">
     <div id="angleOut" style="font:11px/1.4 ui-monospace,monospace;color:#8b95a1;margin-top:4px"></div>
   </div>
 
   <hr>
-  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:0 0 6px">
-    <input type="checkbox" id="number" style="width:auto;margin:0"> Numeruj kawałki (grawer na ściance)
+  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:0 0 6px"
+         title="Engrave each piece's grid index (e.g. 0-1-2) as small dimples on a face, so you can tell which piece goes where.">
+    <input type="checkbox" id="number" style="width:auto;margin:0"> Number pieces (engraved on a face)
   </label>
-  <button class="primary" id="cut" disabled>2 · Tnij i eksportuj</button>
-  <label>Rozsunięcie (exploded)</label>
+  <button class="primary" id="cut" disabled title="Run the boolean cut, add the joints, and prepare the pieces for download.">2 · Cut & export</button>
+  <label title="Spread the cut pieces apart in the view to inspect them. Does not change the exported files.">Explode</label>
   <input type="range" id="explode" min="0" max="1.5" step="0.01" value="0">
-  <button id="download" disabled>⬇ Pobierz ZIP</button>
+  <button id="download" disabled>⬇ Download ZIP</button>
 
+  <div id="stats"></div>
   <div id="pieceList"></div>
   <div id="log"></div>
 </aside>
 
 <main>
   <canvas id="view"></canvas>
-  <div class="hint">Przeciągnij plik STL tutaj. Obrót: LPM · przesuw: PPM/scroll.</div>
+  <div id="ghostTip"></div>
+  <div class="hint">Drop an STL file here. Orbit: LMB · pan: RMB · zoom: scroll.</div>
 </main>
 
 <script type="module" src="./app.js"></script>
