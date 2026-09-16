@@ -1,9 +1,24 @@
 node_modules/
 dist/
-.DS_Store
-.claude/
-debug/
+.vite/
 
-# local 3D models / exports
+# editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# local scratch
+debug/
+*.log
+.env
+.env.*
+*.local
+
+# local 3D models / exports — keep the repo free of test parts
 *.stl
+*.3mf
+*.step
+*.stp
 *.zip
