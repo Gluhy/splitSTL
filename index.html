@@ -44,79 +44,149 @@
               font: 11px/1.35 ui-monospace, monospace; background: rgba(13,16,20,.92); border: 1px solid #2f6f4a;
               color: #cfe9d8; white-space: nowrap; transform: translateY(-50%); z-index: 5; }
   #ghostTip.bad { color: #ffb4b4; border-color: #7a3030; }
+  .desc { display: block; margin-top: 3px; font-size: 10px; line-height: 1.25; color: #6b7785; text-transform: none; letter-spacing: 0; }
+  #pinDiagram { margin-top: 10px; padding: 8px 8px 4px; background: #1a1d22; border: 1px solid #2f343c; border-radius: 6px; }
+  #pinDiagram svg { display: block; width: 100%; height: auto; }
+  #pinDiagram .dim { opacity: .34; transition: opacity .12s; }
+  #pinDiagram .dim.on { opacity: 1; }
+  #pinDiagram .dim text { fill: #9aa3ad; font: 9px system-ui, sans-serif; }
+  #pinDiagram .dim.on text { fill: #ffe066; font-weight: 700; }
+  #pinDiagram .dim line, #pinDiagram .dim path { stroke: #9aa3ad; stroke-width: 1; fill: none; }
+  #pinDiagram .dim.on line, #pinDiagram .dim.on path { stroke: #ffe066; stroke-width: 1.4; }
+  #pinDiagram figcaption { margin: 4px 0 0; font-size: 10px; color: #5c6671; text-align: center; }
 </style>
 </head>
 <body>
 <aside>
   <h1>STL Cutter</h1>
-  <span class="badge">100% in your browser — files never leave your device</span>
+  <span class="badge" data-i18n="badge">100% in your browser — files never leave your device</span>
+  <label data-i18n="lang.label">Language</label>
+  <select id="lang"></select>
 
-  <label title="Load a watertight STL. You can also drag & drop it onto the 3D view.">STL file</label>
-  <input type="file" id="file" accept=".stl" title="Load a watertight STL. You can also drag & drop it onto the 3D view.">
+  <label data-i18n="file.label" data-i18n-title="file.tip" title="Load a watertight STL. You can also drag &amp; drop it onto the 3D view.">STL file</label>
+  <input type="file" id="file" accept=".stl" data-i18n-title="file.tip">
 
-  <label title="Printer build volume X / Y / Z (mm). The model is split so every piece fits inside (minus margin).">Printer / build volume</label>
-  <select id="preset" title="Pick your printer to fill in the build volume, or choose Custom and type your own X / Y / Z."></select>
-  <div class="row3" style="margin-top:6px" title="Build volume X / Y / Z in mm. Each cut piece must fit inside (minus margin).">
+  <label data-i18n="printer.label" data-i18n-title="printer.tip">Printer / build volume</label>
+  <select id="preset" data-i18n-title="preset.tip"></select>
+  <div class="row3" style="margin-top:6px" data-i18n-title="build.tip">
     <input type="number" id="bx" value="256"><input type="number" id="by" value="256"><input type="number" id="bz" value="256">
   </div>
+  <label data-i18n="margin.label">Margin</label>
+  <input type="number" id="margin" value="2">
+  <span class="desc" data-i18n="margin.desc">Unused border kept inside the build volume, so pieces fit with room to spare.</span>
 
-  <label title="How the pieces join at a seam.">Connector type</label>
-  <select id="connector" title="auto = dowel where the wall is thick enough, otherwise a flat glue joint · dowel = a hole on both sides (insert your own rod) · plug = printed peg + socket · none = plain flat butt joint.">
-    <option value="auto" selected>auto — dowel by wall thickness / flat butt</option>
-    <option value="dowel">dowel — holes + your own rod</option>
-    <option value="plug">plug — peg + socket</option>
-    <option value="none">none — flat butt joint</option>
+  <label data-i18n="connector.label" data-i18n-title="connector.tip">Joint type</label>
+  <select id="connector" data-i18n-title="connector.tip">
+    <option value="auto" selected data-i18n="connector.dowels">Dowels — pins printed as their own STL</option>
+    <option value="none" data-i18n="connector.none">None — flat glue joint</option>
   </select>
 
   <div class="row3">
-    <div title="Pin / dowel diameter (mm). Auto mode treats this as the maximum and shrinks it to fit the wall; manual mode uses it exactly."><label>Pin Ø</label><input type="number" id="pinD" value="5" step="0.5"></div>
-    <div title="Total pin length (mm), centered on the seam — half reaches into each piece."><label>Length</label><input type="number" id="pinLen" value="14"></div>
-    <div title="Gap between pin and hole (mm) for a sliding fit. Bigger = looser, easier to assemble."><label>Clearance</label><input type="number" id="clearance" value="0.15" step="0.05"></div>
+    <div><label data-i18n="pinD.label">Pin Ø</label><input type="number" id="pinD" value="5" step="0.5">
+      <span class="desc" data-i18n="pinD.desc">Maximum. Each pin shrinks to the largest Ø the wall takes.</span></div>
+    <div><label data-i18n="pinLen.label">Length</label><input type="number" id="pinLen" value="14">
+      <span class="desc" data-i18n="pinLen.desc">Total, centred on the seam — half into each piece.</span></div>
+    <div><label data-i18n="clearance.label">Clearance</label><input type="number" id="clearance" value="0.15" step="0.05">
+      <span class="desc" data-i18n="clearance.desc">Pin-to-hole gap. More = looser, easier to assemble.</span></div>
   </div>
-  <div class="row3">
-    <div title="Empty border kept inside the build volume (mm) so pieces fit with room to spare."><label>Margin</label><input type="number" id="margin" value="2"></div>
-    <div title="Minimum wall of material left around a pin (mm). Seams thinner than this get no pin (flat glue joint instead)."><label>Min. wall</label><input type="number" id="minWall" value="1.2" step="0.1"></div>
-    <div title="Target distance between auto-placed pins along a seam (mm)."><label>Spacing</label><input type="number" id="spacing" value="40"></div>
+  <div class="row3" style="margin-top:8px">
+    <div><label data-i18n="minWall.label">Min. wall</label><input type="number" id="minWall" value="1.2" step="0.1">
+      <span class="desc" data-i18n="minWall.desc">Material kept around the hole. Thinner seams get no pin.</span></div>
+    <div><label data-i18n="spacing.label">Spacing</label><input type="number" id="spacing" value="40">
+      <span class="desc" data-i18n="spacing.desc">Target gap between pins along one seam.</span></div>
+    <div></div>
   </div>
 
-  <button class="primary" id="plan" disabled title="Work out the cut planes and auto-place dowel pins. Run this first, then edit pins if you want.">1 · Plan cuts</button>
+  <figure id="pinDiagram" style="margin:10px 0 0">
+    <svg viewBox="0 0 300 168" role="img" aria-label="Cross-section of a dowel joint">
+      <rect x="6" y="30" width="144" height="112" fill="#252a31" stroke="#3a4049"/>
+      <rect x="150" y="30" width="144" height="112" fill="#252a31" stroke="#3a4049"/>
+      <rect x="102" y="52" width="96" height="30" fill="#15171b" stroke="#3a4049"/>
+      <rect x="102" y="104" width="96" height="30" fill="#15171b" stroke="#3a4049"/>
+      <rect x="108" y="57" width="84" height="20" rx="3" fill="#37d67a"/>
+      <rect x="108" y="109" width="84" height="20" rx="3" fill="#37d67a"/>
+      <line x1="150" y1="24" x2="150" y2="148" stroke="#ffe066" stroke-dasharray="3 3" opacity=".7"/>
+      <text x="150" y="19" fill="#8b95a1" font-size="9" text-anchor="middle" data-i18n="diagram.seam">seam</text>
+
+      <g class="dim" data-k="pinD">
+        <line x1="212" y1="57" x2="212" y2="77"/>
+        <line x1="207" y1="57" x2="217" y2="57"/><line x1="207" y1="77" x2="217" y2="77"/>
+        <line x1="192" y1="57" x2="212" y2="57" stroke-dasharray="2 2"/>
+        <line x1="192" y1="77" x2="212" y2="77" stroke-dasharray="2 2"/>
+        <text x="221" y="70" data-i18n="pinD.label">Pin Ø</text>
+      </g>
+      <g class="dim" data-k="pinLen">
+        <line x1="108" y1="45" x2="192" y2="45"/>
+        <line x1="108" y1="41" x2="108" y2="49"/><line x1="192" y1="41" x2="192" y2="49"/>
+        <text x="150" y="40" text-anchor="middle" data-i18n="pinLen.label">Length</text>
+      </g>
+      <g class="dim" data-k="clearance">
+        <line x1="122" y1="50" x2="122" y2="59"/>
+        <line x1="117" y1="52" x2="127" y2="52"/><line x1="117" y1="57" x2="127" y2="57"/>
+        <line x1="122" y1="54.5" x2="78" y2="54.5" stroke-dasharray="2 2"/>
+        <text x="74" y="58" text-anchor="end" data-i18n="clearance.label">Clearance</text>
+      </g>
+      <g class="dim" data-k="minWall">
+        <line x1="60" y1="30" x2="60" y2="52"/>
+        <line x1="55" y1="30" x2="65" y2="30"/><line x1="55" y1="52" x2="65" y2="52"/>
+        <text x="51" y="45" text-anchor="end" data-i18n="minWall.label">Min. wall</text>
+      </g>
+      <g class="dim" data-k="spacing">
+        <line x1="252" y1="67" x2="252" y2="119"/>
+        <line x1="247" y1="67" x2="257" y2="67"/><line x1="247" y1="119" x2="257" y2="119"/>
+        <text x="261" y="96" data-i18n="spacing.label">Spacing</text>
+      </g>
+    </svg>
+    <figcaption data-i18n="diagram.caption">Hover a field above — clearance exaggerated</figcaption>
+  </figure>
+
+  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:10px 0 6px"
+         data-i18n-title="seam.tip">
+    <input type="checkbox" id="seamSearch" style="width:auto;margin:0"> <span data-i18n="seam.label">Put seams where the part is thickest</span>
+  </label>
+  <button class="primary" id="plan" disabled data-i18n="plan.btn" data-i18n-title="plan.tip">1 · Plan cuts</button>
 
   <hr>
-  <button id="editToggle" disabled title="Turn on editing to add / move / delete pins by hand on the active cut plane.">Edit pins: off</button>
-  <label title="The cut plane you're editing. The model is sectioned here so you can see inside, and clicks add pins on it.">Active plane</label>
-  <select id="activePlane" title="Switch the cut plane you're editing / sectioning."></select>
+  <button id="editToggle" disabled data-i18n-title="edit.tip">Edit pins: off</button>
+  <label data-i18n="activePlane.label" data-i18n-title="activePlane.tip">Active plane</label>
+  <select id="activePlane" data-i18n-title="activePlane.tip"></select>
+  <div class="hint" style="position:static;margin:6px 0 0" data-i18n-html="planeHint"></div>
 
   <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:10px 0 4px"
-         title="Off: the pin Ø is auto-fitted to the wall thickness. On: every new pin uses the exact Ø you pick, so you can mix sizes.">
-    <input type="checkbox" id="manualD" style="width:auto;margin:0"> Manual pin Ø (no auto-fit)
+         data-i18n-title="manualD.tip">
+    <input type="checkbox" id="manualD" style="width:auto;margin:0"> <span data-i18n="manualD.label">Manual pin Ø (no auto-fit)</span>
   </label>
   <div id="manualBox" style="display:none">
     <div class="sizes" id="quickSizes"></div>
-    <div class="hint" style="position:static;margin:6px 0 0">Pick a Ø or change it with <b>Alt+scroll</b> over the model (scroll alone = zoom). Red circle/pin = too thin, but you can still place it.</div>
+    <div class="hint" style="position:static;margin:6px 0 0" data-i18n-html="sizesHint"></div>
   </div>
 
-  <p class="hint" style="position:static;margin:8px 0 0">While editing, the model is shown as a section through the active plane — you can see inside. The circle under the cursor shows Ø and whether it fits. LMB = select/add/drag · RMB = delete.</p>
+  <p class="hint" style="position:static;margin:8px 0 0" data-i18n-html="editHelp"></p>
 
   <div id="pinPanel" style="display:none;margin-top:10px;padding:8px;border:1px solid #2f343c;border-radius:6px">
-    <div style="font-size:11px;color:#9aa3ad;margin-bottom:4px">Selected pin</div>
-    <label title="Diameter of this pin (mm).">Pin Ø</label>
+    <div style="font-size:11px;color:#9aa3ad;margin-bottom:4px" data-i18n="pinPanel.title">Selected pin</div>
+    <label data-i18n="pinSize.label" data-i18n-title="pinSize.tip">Pin Ø</label>
     <input type="range" id="pinSize" min="2.5" max="20" step="0.5" value="5">
-    <label title="Tilt this pin away from straight-into-the-cut, to aim it into thicker material.">Tilt angle</label>
+    <label data-i18n="tilt.label" data-i18n-title="tilt.tip">Tilt angle</label>
     <input type="range" id="tilt" min="0" max="70" step="1" value="0">
-    <label title="Spin the tilt direction around the cut normal (which way the pin leans).">Rotation</label>
+    <label data-i18n="az.label" data-i18n-title="az.tip">Rotation</label>
     <input type="range" id="az" min="0" max="359" step="1" value="0">
     <div id="angleOut" style="font:11px/1.4 ui-monospace,monospace;color:#8b95a1;margin-top:4px"></div>
   </div>
 
   <hr>
   <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:0 0 6px"
-         title="Engrave each piece's grid index (e.g. 0-1-2) as small dimples on a face, so you can tell which piece goes where.">
-    <input type="checkbox" id="number" style="width:auto;margin:0"> Number pieces (engraved on a face)
+         data-i18n-title="number.tip">
+    <input type="checkbox" id="number" style="width:auto;margin:0"> <span data-i18n="number.label">Number pieces (engraved on a face)</span>
   </label>
-  <button class="primary" id="cut" disabled title="Run the boolean cut, add the joints, and prepare the pieces for download.">2 · Cut & export</button>
-  <label title="Spread the cut pieces apart in the view to inspect them. Does not change the exported files.">Explode</label>
+  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:0 0 6px"
+         data-i18n-title="orient.tip">
+    <input type="checkbox" id="orient" checked style="width:auto;margin:0"> <span data-i18n="orient.label">Orient pieces for printing</span>
+  </label>
+  <button class="primary" id="cut" disabled data-i18n="cut.btn" data-i18n-title="cut.tip">2 · Cut &amp; export</button>
+  <label data-i18n="explode.label" data-i18n-title="explode.tip">Explode</label>
   <input type="range" id="explode" min="0" max="1.5" step="0.01" value="0">
-  <button id="download" disabled>⬇ Download ZIP</button>
+  <button id="download" disabled data-i18n="download.btn">⬇ Download ZIP</button>
 
   <div id="stats"></div>
   <div id="pieceList"></div>
@@ -126,7 +196,7 @@
 <main>
   <canvas id="view"></canvas>
   <div id="ghostTip"></div>
-  <div class="hint">Drop an STL file here. Orbit: LMB · pan: RMB · zoom: scroll.</div>
+  <div class="hint" data-i18n="dropHint">Drop an STL file here. Orbit: LMB · pan: RMB · zoom: scroll.</div>
 </main>
 
 <script type="module" src="./app.js"></script>

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node test/pins.mjs && node test/i18n.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",

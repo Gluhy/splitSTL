@@ -1,6 +1,6 @@
 # STL Cutter
 
-**Cut models that are bigger than your print bed into pieces that fit — right in your browser — with auto-generated dowel-pin joints to glue them back together.**
+**Cut models that are bigger than your print bed into pieces that fit — right in your browser — with auto-generated dowel joints, and the dowels themselves exported as an STL to print.**
 
 **100% client-side.** Your model never leaves your machine: no upload, no account, no server.
 
@@ -18,8 +18,9 @@ You found a great big model, but it's taller than your printer. The usual fix �
 
 1. **Drop in an STL** (or pick a file).
 2. **Plan cuts** — it splits the model to your printer and auto-places dowel pins.
-3. *(optional)* **Edit pins** — add / move / delete / resize pins on a live section view.
-4. **Cut & export** — boolean cut + joints, then **Download ZIP** (one STL per piece).
+3. *(optional)* **Move the cut planes** — drag a seam in the 3D view to hide it in a crease instead of taking the even split; the pins on it are re-placed.
+4. *(optional)* **Edit pins** — add / move / delete / resize pins on a live section view.
+5. **Cut & export** — boolean cut + joints, then **Download ZIP** (one STL per piece, plus one STL per dowel size holding every dowel you need).
 
 ## Screenshots
 
@@ -29,21 +30,25 @@ You found a great big model, but it's taller than your printer. The usual fix �
 
 - **Printer presets** — Bambu Lab (A1 / P1 / X1 / H2D), Prusa, Ender 3, Voron, or a custom build volume.
 - **Automatic slicing** — splits the model along X/Y/Z so every piece fits the bed (minus margin).
-- **Dowel joints** — auto-places **perpendicular** pins on each seam so the parts slide together and align. Pin Ø is auto-fitted to wall thickness; seams too thin for a pin fall back to a flat glue joint.
-- **Interactive 3D pin editing** — toggle edit mode to add / move / delete pins on the active cut plane. The model is shown as a **live section** through that plane (with the real cross-section outline), so you can see inside. A **ghost circle under the cursor** previews the pin Ø, direction and whether it fits (green = fits, red = too thin). Pin size is auto-fitted by default, or switch to **manual Ø** — quick-size chips, a slider, or **Alt+scroll** over the model — to mix sizes freely.
+- **Seams where the part is thickest** (optional) — an even split lands wherever it lands, sometimes right on a waist where no dowel fits at all. Switch it on and each seam slides inside a window around its even position to the cross-section carrying the most material: more glue area, room for fatter dowels, same piece count. Pieces come out less uniform in length, and every one is still checked against the bed.
+- **Dowel joints** — auto-places **perpendicular** pins on each seam so the parts slide together and align. Each pin gets the largest Ø that fits where it is tightest along its whole length; seams too thin for any pin fall back to a flat glue joint. Pins are spread evenly by diameter class, so seams of the same shape get the same joint.
+- **The dowels are printed too** — no need to source rods. Every dowel is written to `pins_<Ø>mm_x<n>.stl`, laid out on the plate standing on end, chamfered both ends and **fluted** — longitudinal grooves give the glue somewhere to go instead of being scraped off on the way in (wooden dowels are fluted for the same reason). Oversized batches are split across as many plates as it takes to fit the bed. Holes are drilled 0.5 mm deeper per side so the two faces meet instead of the pin bottoming out, with a lead-in chamfer as wide as the spare wall allows.
+- **Movable cut planes** — the even split is rarely where you want the seam. Click a plane to work on it, drag it to move that cut (Shift+drag for fine control); it is clamped so every piece still fits the bed, and the pins on that seam are re-placed automatically.
+- **Interactive 3D pin editing** — toggle edit mode to add / move / delete pins on the active cut plane. The model is shown as a **live section** through that plane (with the real cross-section outline), so you can see inside. A **ghost dowel** follows the cursor at its real Ø and length, so you see how far it reaches into both pieces and whether it fits (green = fits, red = too thin). Click to add, drag to orbit the camera, drag a pin to move it, **Del** to delete, **Ctrl+Z / Ctrl+Shift+Z** to undo / redo. Pin size is auto-fitted by default, or switch to **manual Ø** — quick-size chips, a slider, or **Alt+scroll** — to mix sizes freely.
+- **Print orientation** — each exported piece is rotated so its biggest cut face lies on the bed: flat first layer, dowel holes printing straight up, nothing to support on the seam. The 3D view stays assembled; the rotation is applied when the STL is written. Turn it off with one checkbox.
 - **Disconnected bodies are split automatically** — if one bed-sized cell ends up holding separate, non-touching parts, each becomes its own piece (and its own number), so nothing gets bundled into a single confusing STL.
 - **Piece numbering** (optional) — engraves each piece's grid index (e.g. `0-1-2`) as a 3×5 matrix of self-supporting square-pyramid dimples on a cut face, placed only where there's actually material and auto-oriented so it lands on the part. The readable number is also shown floating in the 3D view.
 - **Exploded view + stats** — spread the pieces apart; stat boxes show piece count, joint count and numbering status; each piece gets a "fits / too big" check. Hover a piece in the list to highlight its number, click to center the camera on it.
 - **Mesh auto-repair + diagnostics** — welds duplicate vertices, drops degenerate/duplicate triangles, fills small holes. If a mesh still isn't a valid 2-manifold, it tells you *why* (boundary edges / non-manifold edges / flipped normals) instead of failing cryptically.
 - **Hover help** on every setting — tooltips explain what each option does.
-- **ZIP export** — one binary STL per piece.
+- **ZIP export** — one binary STL per piece, plus the dowel stock.
 
 ## How it works
 
 1. The model is converted to a watertight `manifold-3d` solid (with auto-repair).
 2. A signed-distance field (via a BVH) measures wall thickness around the seams.
 3. Cut planes are spaced so each resulting cell fits the build volume.
-4. Perpendicular dowel pins are placed where a straight pin fully fits the material, kept clear of where perpendicular cuts intersect.
+4. Perpendicular dowel pins are placed where a straight pin fully fits the material, kept clear of where perpendicular cuts intersect, and spread from the middle of each seam outwards so equivalent seams get equivalent joints.
 5. Cutting + pin holes/plugs are done with boolean ops; disconnected bodies are separated; each piece is exported as STL.
 
 ## Tech

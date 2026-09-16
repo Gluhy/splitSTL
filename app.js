@@ -5,12 +5,13 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter }  from 'three/addons/exporters/STLExporter.js';
 import { zipSync } from 'fflate';
 import { PRESETS } from './presets.js';
-import { planCuts, cutAndConnect, planeKey, dirFromTiltAz, autoDir } from './cutter.js';
+import { t, setLang, getLang, LANGS } from './i18n.js';
+import { planCuts, cutAndConnect, planeKey, dirFromTiltAz, pinFit, fitDiameter, planPlane, MIN_D, HOLE_FIT } from './cutter.js';
 
 const $ = id => document.getElementById(id);
-const log = m => { const el = $('log'); if (!el) return; el.textContent += m + '\n'; el.scrollTop = 1e9; };
-addEventListener('error', e => log('JS ERROR: ' + (e.message || e.error)));
-addEventListener('unhandledrejection', e => log('PROMISE ERROR: ' + (e.reason?.message || e.reason)));
+const log = (key, p) => { const el = $('log'); if (!el) return; el.textContent += t(key, p) + '\n'; el.scrollTop = 1e9; };
+addEventListener('error', e => log('log.jsError', { msg: e.message || e.error }));
+addEventListener('unhandledrejection', e => log('log.promiseError', { msg: e.reason?.message || e.reason }));
 const AXIS_COLOR = [0xff5555, 0x55ff7f, 0x5599ff];
 const PALETTE = [0x4caf50, 0x2196f3, 0xff9800, 0xe91e63, 0x9c27b0, 0x00bcd4, 0xcddc39, 0xff5722];
 
@@ -28,10 +29,37 @@ const modelGroup = new THREE.Group(), planeGroup = new THREE.Group(),
       pinGroup = new THREE.Group(), arrowGroup = new THREE.Group(), pieceGroup = new THREE.Group();
 scene.add(modelGroup, planeGroup, pinGroup, arrowGroup, pieceGroup);
 
+// ----- GPU resource hygiene -----
+// Group.clear() only unlinks children: their geometries, materials and canvas textures stay
+// on the GPU until something calls dispose(). Re-cutting a model leaked ~53 geometries and one
+// label texture per piece, every time. KEEP holds the resources shared between objects — three
+// keeps ONE geometry behind every ArrowHelper and every Sprite, so disposing them per object
+// would yank the buffers out from under all the others.
+const KEEP = new Set();
+function disposeObject(root) {
+  root.traverse(n => {
+    if (n.geometry && !KEEP.has(n.geometry)) n.geometry.dispose();
+    const mats = Array.isArray(n.material) ? n.material : n.material ? [n.material] : [];
+    for (const m of mats) {
+      if (KEEP.has(m)) continue;
+      if (m.map) m.map.dispose();
+      m.dispose();
+    }
+  });
+}
+function clearGroup(g) { for (const c of [...g.children]) disposeObject(c); g.clear(); }
+
+// One sphere and two materials for every pin marker — there used to be a set per pin.
+const PIN_GEO = new THREE.SphereGeometry(1, 16, 12);
+const PIN_OK = new THREE.MeshBasicMaterial({ color: 0x37d67a });
+const PIN_BAD = new THREE.MeshBasicMaterial({ color: 0xff4d4d });
+[PIN_GEO, PIN_OK, PIN_BAD].forEach(r => KEEP.add(r));
+
 // ----- state ----- (before the render loop — updateClip() reaches into S on frame 1)
 const S = { geometry: null, plan: null, sd: null, pins: new Map(),
             pieces: null, pieceMeshes: [], pieceLabels: [], mode: 'view', activeKey: null,
-            dragging: null, selected: null, modelMat: null, clip: new THREE.Plane(), lastHover: null };
+            dragging: null, dragPlane: null, planeMarked: false, selected: null, modelMat: null, clip: new THREE.Plane(),
+            lastHover: null, planOpts: null };
 
 function resize() {
   const w = canvas.parentElement.clientWidth, h = canvas.parentElement.clientHeight;
@@ -70,52 +98,101 @@ function opts() {
     margin: +$('margin').value, connector: $('connector').value,
     pinD: +$('pinD').value, pinLen: +$('pinLen').value,
     clearance: +$('clearance').value, minWall: +$('minWall').value, spacing: +$('spacing').value,
-    number: $('number').checked };
+    number: $('number').checked, orient: $('orient').checked, seamSearch: $('seamSearch').checked };
 }
 const reqSdFor = d => d / 2 + +$('clearance').value + +$('minWall').value;
-const halfLen = () => +$('pinLen').value / 2;
+const halfLen = () => +$('pinLen').value / 2 + HOLE_FIT;   // fit is judged over the DEEPER hole
 const dirOf   = p => dirFromTiltAz(p._axis, p.tilt, p.az);
 const clampD = v => Math.min(20, Math.max(2.5, Math.round(v * 2) / 2));
 // Picks pin Ø and 3D angle for a point on the plane (used both when adding and in the preview).
+// Auto Ø comes from the tightest spot along the pin — the same measure `validate()` uses,
+// so the green/red preview and the Ø it offers can never disagree.
 function pinSpecAt(hit, axis) {
-  const sdc = S.sd(hit.x, hit.y, hit.z);
-  let d;
-  if ($('manualD').checked) {                          // manual mode: exactly the chosen Ø (you can add different sizes)
-    d = clampD(+$('pinD').value);
-  } else {                                             // auto: the largest Ø that fits the wall
-    const fitD = 2 * (sdc - +$('minWall').value - +$('clearance').value);
-    d = Math.max(2.5, Math.min(+$('pinD').value, Math.floor(fitD * 2) / 2 || 2.5));
-  }
-  const a = autoDir(S.sd, hit, axis, halfLen(), reqSdFor(d));
-  return { d, tilt: a.tilt, az: a.az, sdc };
+  const f = pinFit(S.sd, hit, axis, halfLen());
+  const d = $('manualD').checked                       // manual: exactly the chosen Ø (mix sizes freely)
+    ? clampD(+$('pinD').value)
+    : (fitDiameter(f.minSd, opts()) || MIN_D);         // nothing fits -> offer the smallest, shown red
+  return { d, tilt: f.tilt, az: f.az, minSd: f.minSd };
 }
 
 // ----- presets -----
-PRESETS.forEach(p => $('preset').add(new Option(p.name, p.id)));
+// cutter.js has no dictionary, so it tags its errors with a key and the pieces to fill in
+function errText(err) {
+  if (!err.key) return err.message;
+  const p = err.parts ? { why: err.parts.map(([k, q]) => t(k, q)).join(', ') } : undefined;
+  return t(err.key, p);
+}
+
+// ----- language -----
+function applyLang(l) {
+  setLang(l);
+  try { localStorage.setItem('stlcutter.lang', l); } catch {}
+  document.documentElement.lang = l;
+  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+  for (const el of document.querySelectorAll('[data-i18n-html]')) el.innerHTML = t(el.dataset.i18nHtml);
+  for (const el of document.querySelectorAll('[data-i18n-title]')) el.title = t(el.dataset.i18nTitle);
+  $('editToggle').textContent = t(S.mode === 'edit' ? 'edit.on' : 'edit.off');
+  if (S.pieces) showPieces();                              // stats and the piece list are built strings
+}
+LANGS.forEach(([id, name]) => $('lang').add(new Option(name, id)));
+$('lang').value = (() => {
+  try { const v = localStorage.getItem('stlcutter.lang'); if (v) return v; } catch {}
+  return navigator.language?.startsWith('pl') ? 'pl' : 'en';
+})();
+$('lang').onchange = () => applyLang($('lang').value);
+applyLang($('lang').value);
+
+// ----- joint diagram: hovering a pin setting lights up the dimension it controls -----
+(function wireDiagram() {
+  const fig = $('pinDiagram'); if (!fig) return;
+  const dims = [...fig.querySelectorAll('.dim')];
+  const light = k => dims.forEach(g => g.classList.toggle('on', g.dataset.k === k));
+  for (const k of ['pinD', 'pinLen', 'clearance', 'minWall', 'spacing']) {
+    const el = $(k), box = el.parentElement;
+    for (const ev of ['pointerenter', 'focus']) box.addEventListener(ev, () => light(k), true);
+    for (const ev of ['pointerleave', 'blur']) box.addEventListener(ev, () => light(null), true);
+  }
+})();
+
+const DIM = ['bx', 'by', 'bz'];
+(function fillPresets() {                                 // grouped by brand — the flat list got long
+  const sel = $('preset'), groups = new Map();
+  for (const p of PRESETS) {
+    const opt = new Option(p.brand ? `${p.name} — ${p.build.join('×')}` : p.name, p.id);
+    if (!p.brand) { sel.add(opt); continue; }
+    if (!groups.has(p.brand)) { const g = document.createElement('optgroup'); g.label = p.brand; groups.set(p.brand, g); sel.add(g); }
+    groups.get(p.brand).appendChild(opt);
+  }
+})();
 $('preset').value = 'p1s';
 $('preset').onchange = () => {
   const p = PRESETS.find(x => x.id === $('preset').value);
-  if (p && p.id !== 'custom') { $('bx').value = p.build[0]; $('by').value = p.build[1]; $('bz').value = p.build[2]; }
+  if (p && p.id !== 'custom') DIM.forEach((id, i) => $(id).value = p.build[i]);
 };
 $('preset').onchange();
+// once the numbers are typed by hand they are not that printer any more
+DIM.forEach(id => $(id).addEventListener('input', () => {
+  const p = PRESETS.find(x => x.id === $('preset').value);
+  if (p && p.id !== 'custom' && p.build.some((v, i) => v !== +$(DIM[i]).value)) $('preset').value = 'custom';
+}));
 
 // ----- load STL -----
 async function loadFile(f) {
   try {
-    $('log').textContent = ''; log(`Loading: ${f.name} (${(f.size / 1024).toFixed(0)} kB)`);
+    $('log').textContent = ''; log('log.loading', { name: f.name, kb: (f.size / 1024).toFixed(0) });
     const geo = new STLLoader().parse(await f.arrayBuffer());
-    if (!geo.attributes.position) throw new Error('No geometry (bad STL?).');
+    if (!geo.attributes.position) throw new Error(t('err.noGeometry'));
     geo.center();
     S.geometry = geo; S.plan = null; S.pieces = null; $('stats').innerHTML = ''; $('pieceList').innerHTML = '';
-    [modelGroup, planeGroup, pinGroup, arrowGroup, pieceGroup].forEach(g => g.clear());
+    [modelGroup, planeGroup, pinGroup, arrowGroup, pieceGroup].forEach(clearGroup);   // frees the old model material too
     S.pins = new Map(); selectPin(null);
     S.modelMat = new THREE.MeshStandardMaterial({ color: 0x6b7785, flatShading: true, side: THREE.DoubleSide });   // DoubleSide -> interior walls visible after sectioning
     modelGroup.add(new THREE.Mesh(geo, S.modelMat));
     frame(modelGroup);
     $('plan').disabled = false; $('cut').disabled = true; $('download').disabled = true;
     setMode('view'); $('editToggle').disabled = true;
-    log(`OK — ${(geo.attributes.position.count / 3).toFixed(0)} triangles. Click "Plan cuts".`);
-  } catch (err) { log('Load error: ' + err.message); console.error(err); }
+    log('log.loaded', { tris: (geo.attributes.position.count / 3).toFixed(0) });
+  } catch (err) { log('log.loadError', { msg: err.message }); console.error(err); }
 }
 $('file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
 canvas.parentElement.addEventListener('dragover', e => e.preventDefault());
@@ -127,30 +204,30 @@ canvas.parentElement.addEventListener('drop', e => {
 $('plan').onclick = async () => {
   $('plan').disabled = true;
   try {
-    S.plan = await planCuts(S.geometry, opts(), log);
+    S.planOpts = opts();                                   // the cut must use the settings the pins were placed with
+    history.past.length = 0; history.future.length = 0;
+    S.plan = await planCuts(S.geometry, S.planOpts, log);
     S.sd = S.plan.sd;
     buildPlanes(); buildPinsFromPlan(); selectPin(null);
-    pieceGroup.clear(); $('stats').innerHTML = '';
+    clearGroup(pieceGroup); $('stats').innerHTML = '';
     modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = true;
     $('editToggle').disabled = false; $('cut').disabled = false; $('download').disabled = true;
     let n = 0; S.pins.forEach(a => n += a.length);
     const o = opts();
-    log(`Plan: ${S.plan.planes.length} planes, ${n} pins (dowel)`);
+    log('log.plan', { planes: S.plan.planes.length, pins: n });
     if (S.plan.maxWall > 0) {
       const maxD = S.plan.maxWall - 2 * (o.minWall + o.clearance);
-      log(`Thickest wall ~${S.plan.maxWall.toFixed(1)} mm -> max sensible pin Ø ~${Math.max(0, maxD).toFixed(1)} mm`);
+      log('log.maxWall', { wall: S.plan.maxWall.toFixed(1), d: Math.max(0, maxD).toFixed(1) });
     }
-    const ds = [...new Set([...(S.plan.planeD?.values() || [])])].sort((a, b) => a - b);
-    if (ds.length) log(`Pin Ø used: ${ds.map(d => d.toFixed(1)).join(', ')} mm (the "Pin Ø" field = maximum)`);
-    if (o.connector === 'auto') log('Thin joints: flat butt (glue); thick ones — dowels.');
-    else if ((o.connector === 'dowel' || o.connector === 'plug') && n === 0)
-      log('Wall too thin for dowels. Switch connector to "auto".');
-  } catch (err) { log('ERROR: ' + err.message); console.error(err); }
+    const ds = [...new Set([...S.pins.values()].flat().map(p => p.d))].sort((a, b) => a - b);
+    if (ds.length) log('log.used', { list: ds.map(d => d.toFixed(1)).join(', ') });
+    if (o.connector !== 'none') log(n ? 'log.mixed' : 'log.noPins');
+  } catch (err) { log('log.error', { msg: errText(err) }); console.error(err); }
   $('plan').disabled = false;
 };
 
 function buildPlanes() {
-  planeGroup.clear(); $('activePlane').innerHTML = '';
+  clearGroup(planeGroup); $('activePlane').innerHTML = '';
   const { lo, hi, planes } = S.plan;
   planes.forEach(pl => {
     const [au, av] = [0, 1, 2].filter(a => a !== pl.axis);
@@ -234,29 +311,32 @@ function buildSection() {
 
 // ----- pins: visualization -----
 function addPinVisual(p) {
-  p.mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),   // unit sphere scaled by Ø -> size changeable live
-    new THREE.MeshBasicMaterial({ color: 0x37d67a }));
+  p.mesh = new THREE.Mesh(PIN_GEO, PIN_OK);                      // unit sphere scaled by Ø -> size changeable live
   p.arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 1, 0x37d67a);
+  KEEP.add(p.arrow.line.geometry).add(p.arrow.cone.geometry);    // three shares these across all arrows
   pinGroup.add(p.mesh); arrowGroup.add(p.arrow);
   updatePinVisual(p);
 }
 function updatePinVisual(p) {
   const ok = validate(p), col = ok ? 0x37d67a : 0xff4d4d, hl = halfLen();
   const r = Math.max(1.2, (p.d || +$('pinD').value) / 2) * (S.selected === p ? 1.6 : 1);
-  p.mesh.position.set(p.x, p.y, p.z); p.mesh.scale.setScalar(r); p.mesh.material.color.setHex(col);
+  p.mesh.position.set(p.x, p.y, p.z); p.mesh.scale.setScalar(r); p.mesh.material = ok ? PIN_OK : PIN_BAD;
   const d = new THREE.Vector3(...dirOf(p)).normalize();
   p.arrow.position.set(p.x, p.y, p.z).addScaledVector(d, -hl);
   p.arrow.setDirection(d); p.arrow.setLength(hl * 2, Math.min(5, hl), Math.min(3.5, hl * 0.7)); p.arrow.setColor(col);
 }
-function validate(p) {
+// Tightest wall along the whole pin — the one measure that decides whether a pin fits,
+// how big it may be and how much lead-in its hole gets.
+function minSdOf(p) {
   const d = dirOf(p), hl = halfLen(); let m = Infinity;
   for (const t of [-hl, -hl / 2, 0, hl / 2, hl]) {
     const v = S.sd(p.x + d[0] * t, p.y + d[1] * t, p.z + d[2] * t); if (v < m) m = v;
   }
-  return m >= reqSdFor(p.d || +$('pinD').value);
+  return m;
 }
+function validate(p) { return minSdOf(p) >= reqSdFor(p.d || +$('pinD').value); }
 function buildPinsFromPlan() {
-  pinGroup.clear(); arrowGroup.clear(); S.pins = new Map();
+  clearGroup(pinGroup); clearGroup(arrowGroup); S.pins = new Map();
   for (const [key, pts] of S.plan.pins) {
     const arr = pts.map(pt => { const p = { ...pt }; addPinVisual(p); return p; });
     S.pins.set(key, arr);
@@ -264,7 +344,14 @@ function buildPinsFromPlan() {
 }
 function findPin(mesh) { for (const arr of S.pins.values()) { const r = arr.find(p => p.mesh === mesh); if (r) return r; } return null; }
 function removePin(ref) {
-  for (const arr of S.pins.values()) { const i = arr.indexOf(ref); if (i >= 0) { arr.splice(i, 1); pinGroup.remove(ref.mesh); arrowGroup.remove(ref.arrow); if (S.selected === ref) selectPin(null); return; } }
+  for (const arr of S.pins.values()) {
+    const i = arr.indexOf(ref);
+    if (i < 0) continue;
+    arr.splice(i, 1);
+    pinGroup.remove(ref.mesh); arrowGroup.remove(ref.arrow); disposeObject(ref.arrow);
+    if (S.selected === ref) selectPin(null);
+    return;
+  }
 }
 
 // ----- selection + angle/Ø sliders -----
@@ -282,33 +369,33 @@ $('pinSize').oninput = () => { if (!S.selected) return; S.selected.d = clampD(+$
 // ----- circle preview under the cursor (ghost) — "as if you were holding it with the mouse" -----
 const ghost = (() => {
   const Z = new THREE.Vector3(0, 0, 1), tip = $('ghostTip');
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.84, 1, 48),
+  // A translucent dowel at its real Ø and length, so you see what you are about to place and
+  // how far it reaches into both pieces — a flat circle told you neither.
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 32).rotateX(Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0x37d67a, transparent: true, opacity: 0.45,
+                                     flatShading: false, depthTest: false }));
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.88, 1, 48),          // footprint on the section
     new THREE.MeshBasicMaterial({ color: 0x37d67a, transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthTest: false }));
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 48),
-    new THREE.MeshBasicMaterial({ color: 0x37d67a, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthTest: false }));
-  const arrow = new THREE.ArrowHelper(Z, new THREE.Vector3(), 1, 0x37d67a);
-  const group = new THREE.Group(); group.add(disc, ring, arrow); group.visible = false; group.renderOrder = 998;
+  const group = new THREE.Group(); group.add(body, ring); group.visible = false; group.renderOrder = 998;
   scene.add(group);
   return {
     visible() { return group.visible; },
     show(hit, axis, ox, oy) {
-      const { d, tilt, az, sdc } = pinSpecAt(hit, axis);
+      const { d, tilt, az, minSd } = pinSpecAt(hit, axis);
       const ok = validate({ x: hit.x, y: hit.y, z: hit.z, _axis: axis, tilt, az, d });
-      const col = ok ? 0x37d67a : 0xff4d4d, r = d / 2, dir = new THREE.Vector3(...dirFromTiltAz(axis, tilt, az)).normalize();
+      const col = ok ? 0x37d67a : 0xff4d4d, r = d / 2, L = +$('pinLen').value;
+      const dir = new THREE.Vector3(...dirFromTiltAz(axis, tilt, az)).normalize();
       group.visible = true; group.position.copy(hit); group.quaternion.setFromUnitVectors(Z, dir);
-      ring.scale.set(r, r, 1); disc.scale.set(r, r, 1);
-      ring.material.color.setHex(col); disc.material.color.setHex(col);
-      arrow.setDirection(Z);   // arrow in the group's local frame = along the pin axis
-      arrow.setLength(halfLen() * 2, Math.min(5, halfLen()), Math.min(3.5, halfLen() * 0.7)); arrow.setColor(col);
-      arrow.position.set(0, 0, -halfLen());
+      body.scale.set(r, r, L); ring.scale.set(r, r, 1);
+      body.material.color.setHex(col); ring.material.color.setHex(col);
       tip.style.display = 'block'; tip.classList.toggle('bad', !ok);
       tip.style.left = (ox + 16) + 'px'; tip.style.top = oy + 'px';
-      tip.textContent = `Ø ${d.toFixed(1)} mm · wall ${(sdc * 2).toFixed(1)} mm` + ($('manualD').checked ? ' · manual' : '') + (ok ? '' : ' · too thin');
+      tip.textContent = `Ø ${d.toFixed(1)} × ${L} mm · min wall ${Math.max(0, minSd * 2).toFixed(1)} mm`
+        + ($('manualD').checked ? ' · manual' : '') + (ok ? '' : ' · too thin');
     },
     hide() { group.visible = false; tip.style.display = 'none'; }
   };
 })();
-// Refresh the ghost at the last cursor spot (after an Ø / mode change) — without moving the mouse.
 function refreshGhost() { if (S.mode === 'edit' && !S.dragging && ghost.visible() && S.lastHover) ghost.show(S.lastHover.hit, S.lastHover.axis, S.lastHover.ox, S.lastHover.oy); }
 
 // ----- manual Ø selection (several sizes at once) -----
@@ -324,7 +411,7 @@ $('pinD').addEventListener('input', () => { paintSizes(); refreshGhost(); });
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), planeMath = new THREE.Plane();
 function setMode(mode) {
   S.mode = mode;
-  $('editToggle').textContent = mode === 'edit' ? 'Edit pins: ON' : 'Edit pins: off';
+  $('editToggle').textContent = t(mode === 'edit' ? 'edit.on' : 'edit.off');
   $('editToggle').classList.toggle('on', mode === 'edit');
   canvas.style.cursor = mode === 'edit' ? 'crosshair' : 'default';
   if (mode !== 'edit') { selectPin(null); ghost.hide(); }
@@ -341,45 +428,151 @@ function projectToActivePlane() {
   hit.setComponent(pl.userData.axis, pl.userData.coord);
   return { hit, axis: pl.userData.axis, key: pl.userData.key };
 }
-canvas.addEventListener('pointerdown', e => {
-  if (S.mode !== 'edit' || !S.plan) return;
-  pickNDC(e);
-  const hm = ray.intersectObjects(pinGroup.children, false).find(h => h.object.visible);   // ignore hidden pins (other planes)
-  if (hm) { const ref = findPin(hm.object); if (!ref) return;
-    if (e.button === 2) removePin(ref); else { selectPin(ref); S.dragging = ref; controls.enabled = false; } return; }
-  const proj = projectToActivePlane();
-  if (proj && e.button === 0) {
-    controls.enabled = false; ghost.hide();
-    const { d, tilt, az } = pinSpecAt(proj.hit, proj.axis);
-    const p = { x: proj.hit.x, y: proj.hit.y, z: proj.hit.z, _axis: proj.axis, tilt, az, d };
-    addPinVisual(p);
-    (S.pins.get(proj.key) ?? S.pins.set(proj.key, []).get(proj.key)).push(p);
-    selectPin(p);
-  }
+// ----- undo / redo -----
+// Snapshots of the pin map. Deleting used to be a one-way trip.
+const history = { past: [], future: [] };
+// Seam positions belong in the snapshot too. Dragging a plane re-plans the pins on it, so
+// without the cuts an undo would restore pins keyed to a seam that no longer exists — they
+// would vanish from the view and be dropped from the export without a word.
+const snapshot = () => JSON.stringify({
+  cuts: S.plan ? S.plan.cuts.map(a => a.slice()) : null,
+  pins: [...S.pins].map(([k, a]) =>
+    [k, a.map(p => ({ x: p.x, y: p.y, z: p.z, _axis: p._axis, tilt: p.tilt, az: p.az, d: p.d }))]),
 });
-canvas.addEventListener('pointermove', e => {
-  if (S.mode !== 'edit') return;
+function mark() { history.past.push(snapshot()); if (history.past.length > 50) history.past.shift(); history.future.length = 0; }
+function applySnapshot(str) {
+  const snap = JSON.parse(str);
+  if (snap.cuts && S.plan) {
+    S.plan.cuts = snap.cuts;
+    S.plan.planes = [];
+    for (let ax = 0; ax < 3; ax++) for (const c of snap.cuts[ax]) S.plan.planes.push({ axis: ax, coord: c });
+    buildPlanes();                                         // plane meshes and the picker quote the coords
+  }
+  clearGroup(pinGroup); clearGroup(arrowGroup); selectPin(null); S.pins = new Map();
+  for (const [k, arr] of snap.pins) S.pins.set(k, arr.map(pt => { const p = { ...pt }; addPinVisual(p); return p; }));
+  highlightActive();
+}
+function undo() { if (!history.past.length) return; history.future.push(snapshot()); applySnapshot(history.past.pop()); }
+function redo() { if (!history.future.length) return; history.past.push(snapshot()); applySnapshot(history.future.pop()); }
+
+// ----- pointer -----
+// A click adds a pin, a drag orbits the camera. Previously every left-press in edit mode
+// projected onto the (infinite) active plane, dropped a pin there and switched the camera off,
+// so there was no way to look around while editing.
+const DRAG_PX = 4;
+let press = null;
+canvas.addEventListener('pointerdown', e => {
+  if (!S.plan || e.button !== 0) return;
   pickNDC(e);
-  if (S.dragging) {   // dragging an existing pin
+  press = { x: e.offsetX, y: e.offsetY, moved: false, kind: null };
+  if (S.mode === 'edit') {
+    const hm = ray.intersectObjects(pinGroup.children, false).find(h => h.object.visible);
+    if (hm) {                                            // grab a pin -> move it, camera stays put
+      const ref = findPin(hm.object); if (!ref) return;
+      mark(); selectPin(ref); S.dragging = ref; controls.enabled = false; press.kind = 'pin';
+    }
+    return;                                              // empty space: decide on pointerup
+  }
+  const hp = ray.intersectObjects(planeGroup.children, false)[0];
+  if (hp) { S.dragPlane = hp.object; S.planeMarked = false; controls.enabled = false; press.kind = 'plane'; }
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (press && (Math.abs(e.offsetX - press.x) > DRAG_PX || Math.abs(e.offsetY - press.y) > DRAG_PX)) press.moved = true;
+  pickNDC(e);
+  if (S.dragging) {                                      // moving an existing pin
     const proj = projectToActivePlane(); if (!proj) return;
     const p = S.dragging; p.x = proj.hit.x; p.y = proj.hit.y; p.z = proj.hit.z; updatePinVisual(p); ghost.hide(); return;
   }
-  if (!S.plan) return;
-  const overPin = ray.intersectObjects(pinGroup.children, false).some(h => h.object.visible);   // over a visible pin -> no preview
+  if (S.dragPlane) { movePlaneTo(S.dragPlane, e); return; }
+  if (S.mode !== 'edit') return;
+  if (press && press.moved) { ghost.hide(); return; }    // orbiting — no preview in the way
+  const overPin = ray.intersectObjects(pinGroup.children, false).some(h => h.object.visible);
   const proj = overPin ? null : projectToActivePlane();
   if (proj) { S.lastHover = { hit: proj.hit.clone(), axis: proj.axis, ox: e.offsetX, oy: e.offsetY }; ghost.show(proj.hit, proj.axis, e.offsetX, e.offsetY); }
   else ghost.hide();
 });
+
+addEventListener('pointerup', e => {
+  const p = press; press = null; S.dragging = null; S.dragPlane = null; controls.enabled = true;
+  if (!p || !S.plan) return;
+  if (p.moved || p.kind) return;                         // a drag, or it started on a pin/plane
+  pickNDC(e);
+  if (S.mode !== 'edit') {                               // view mode: a click picks the plane to work on
+    const hp = ray.intersectObjects(planeGroup.children, false)[0];
+    if (hp) { S.activeKey = hp.object.userData.key; $('activePlane').value = S.activeKey; highlightActive(); }
+    return;
+  }
+  const hm = ray.intersectObjects(pinGroup.children, false).find(h => h.object.visible);
+  if (hm) { selectPin(findPin(hm.object)); return; }     // a plain click on a pin just selects it
+  const proj = projectToActivePlane(); if (!proj) return;
+  mark(); ghost.hide();
+  const { d, tilt, az } = pinSpecAt(proj.hit, proj.axis);
+  const pin = { x: proj.hit.x, y: proj.hit.y, z: proj.hit.z, _axis: proj.axis, tilt, az, d };
+  addPinVisual(pin);
+  (S.pins.get(proj.key) ?? S.pins.set(proj.key, []).get(proj.key)).push(pin);
+  selectPin(pin);
+});
+
 canvas.addEventListener('pointerleave', () => { ghost.hide(); S.lastHover = null; });
-addEventListener('pointerup', () => { S.dragging = null; controls.enabled = true; });
-canvas.addEventListener('contextmenu', e => { if (S.mode === 'edit') e.preventDefault(); });
+canvas.addEventListener('contextmenu', e => {
+  if (S.mode !== 'edit' || !S.plan) return;
+  e.preventDefault(); pickNDC(e);
+  const hm = ray.intersectObjects(pinGroup.children, false).find(h => h.object.visible);
+  if (hm) { const ref = findPin(hm.object); if (ref) { mark(); removePin(ref); } }
+});
+
+addEventListener('keydown', e => {
+  const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
+  if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if ((e.key === 'y' || e.key === 'Y') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); redo(); return; }
+  if (typing) return;
+  if (e.key === 'Escape') { selectPin(null); ghost.hide(); return; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && S.selected) { e.preventDefault(); mark(); removePin(S.selected); }
+});
+
+// ----- dragging a cut plane -----
+// The even split is rarely where you want the seam; drag it into a crease or off a detail.
+// The pins on that seam are re-placed, because their old positions no longer sit on it.
+const _planeMath = new THREE.Plane(), _hit = new THREE.Vector3();
+function movePlaneTo(mesh, e) {
+  const ax = mesh.userData.axis, { lo, hi, cuts, usable } = S.plan;
+  const list = cuts[ax], i = list.indexOf(mesh.userData.coord);
+  if (i < 0) return;
+  // slide along `ax`: intersect the ray with a plane facing the camera that contains the cut
+  const n = camera.getWorldDirection(new THREE.Vector3()).negate(); n.setComponent(ax, 0);
+  if (n.lengthSq() < 1e-6) return;
+  _planeMath.setFromNormalAndCoplanarPoint(n.normalize(), mesh.position);
+  if (!ray.ray.intersectPlane(_planeMath, _hit)) return;
+  const prev = i === 0 ? lo[ax] : list[i - 1], next = i === list.length - 1 ? hi[ax] : list[i + 1];
+  let c = _hit.getComponent(ax);
+  if (e.shiftKey) c = mesh.userData.coord + (c - mesh.userData.coord) * 0.25;      // fine drag
+  c = Math.min(Math.max(c, Math.max(prev + 1, next - usable[ax])), Math.min(next - 1, prev + usable[ax]));
+  if (Math.abs(c - mesh.userData.coord) < 1e-4) return;
+  if (!S.planeMarked) { mark(); S.planeMarked = true; }      // once per drag, not once per mouse move
+  const oldKey = mesh.userData.key;
+  list[i] = c; mesh.position.setComponent(ax, c);
+  mesh.userData.coord = c; mesh.userData.key = planeKey(ax, c);
+  S.pins.delete(oldKey);
+  S.pins.set(mesh.userData.key, planPlane(S.plan, ax, c, S.planOpts).map(pt => ({ ...pt })));
+  clearGroup(pinGroup); clearGroup(arrowGroup); selectPin(null);
+
+  for (const arr of S.pins.values()) for (const p of arr) addPinVisual(p);
+  S.plan.planes = S.plan.planes.map(pl => (pl.axis === ax && planeKey(ax, pl.coord) === oldKey) ? { axis: ax, coord: c } : pl);
+  const opt = [...$('activePlane').options].find(o => o.value === oldKey);
+  if (opt) { opt.value = mesh.userData.key; opt.textContent = `${['X','Y','Z'][ax]} @ ${c.toFixed(1)}`; }
+  if (S.activeKey === oldKey) S.activeKey = mesh.userData.key;
+  $('activePlane').value = S.activeKey;
+  highlightActive();
+}
+
 // Alt+scroll changes Ø live (the selected pin, or the next one to be added); scroll alone -> normal zoom.
 canvas.addEventListener('wheel', e => {
   if (S.mode !== 'edit' || !e.altKey) return;     // no Alt -> leave zoom alone
   if (!S.selected && !ghost.visible()) return;
   e.preventDefault(); e.stopPropagation();
   const step = e.deltaY < 0 ? 0.5 : -0.5;
-  if (S.selected) { S.selected.d = clampD(S.selected.d + step); $('pinSize').value = S.selected.d; updatePinVisual(S.selected); readout(); }
+  if (S.selected) { mark(); S.selected.d = clampD(S.selected.d + step); $('pinSize').value = S.selected.d; updatePinVisual(S.selected); readout(); }
   else { if (!$('manualD').checked) { $('manualD').checked = true; toggleManual(); } setPinD(+$('pinD').value + step); }
 }, { capture: true, passive: false });
 
@@ -388,11 +581,16 @@ $('cut').onclick = async () => {
   if (!S.plan) return;
   $('cut').disabled = true; setMode('view');
   const pins = new Map();
-  for (const [k, arr] of S.pins) pins.set(k, arr.map(p => ({ x: p.x, y: p.y, z: p.z, dir: dirOf(p), d: p.d })));
+  for (const [k, arr] of S.pins) pins.set(k, arr.map(p => ({ x: p.x, y: p.y, z: p.z, dir: dirOf(p), d: p.d, cost: minSdOf(p) })));
   try {
-    S.pieces = await cutAndConnect(S.geometry.clone(), opts(), pins, log);
+    // geometry-critical settings come from the plan — changing the printer or the margin
+    // afterwards would move the cut planes and silently drop every pin. Numbering is cosmetic.
+    const o = { ...(S.planOpts || opts()), number: $('number').checked, orient: $('orient').checked };
+    o.cuts = S.plan.cuts;                                  // the plan owns the seam positions:
+                                                           // searched, dragged, or the even split
+    S.pieces = await cutAndConnect(S.geometry.clone(), o, pins, log);
     showPieces(); $('download').disabled = S.pieces.length === 0;
-  } catch (err) { log('BLAD: ' + err.message); console.error(err); }
+  } catch (err) { log('log.error', { msg: errText(err) }); console.error(err); }
   $('cut').disabled = false;
 };
 function makeLabelSprite(text) {
@@ -408,6 +606,7 @@ function makeLabelSprite(text) {
   const tex = new THREE.CanvasTexture(cv); tex.anisotropy = 4;
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
   const mmH = 11; spr.scale.set(mmH * cv.width / cv.height, mmH, 1); spr.renderOrder = 999;
+  KEEP.add(spr.geometry);                                   // three shares one quad across all sprites
   return spr;
 }
 function pieceLabel(name) { return name.replace(/^piece_/, '').replace(/\.stl$/, ''); }
@@ -415,17 +614,19 @@ function statBox(val, label, cls) { return `<div class="stat ${cls || ''}"><b>${
 function showStats() {
   const st = S.pieces.stats; if (!st) { $('stats').innerHTML = ''; return; }
   const bad = S.pieces.filter(p => !p.fits).length;
-  const num = !st.numbered ? statBox('—', 'numbering: off', 'off')
-            : st.engraved === st.pieces ? statBox('✓', `numbered ${st.engraved}/${st.pieces}`, 'ok')
-            : statBox(`${st.engraved}/${st.pieces}`, 'numbering partial', 'warn');
+  const num = !st.numbered ? statBox('—', t('stat.number.off'), 'off')
+            : st.engraved === st.pieces ? statBox('✓', t('stat.number.ok', { n: st.engraved, total: st.pieces }), 'ok')
+            : statBox(`${st.engraved}/${st.pieces}`, t('stat.number.partial'), 'warn');
+  const pinLbl = st.pins ? (st.pinSizes || []).map(x => `${x.count}× Ø${x.d.toFixed(1)}`).join(' · ') : t('stat.pins.none');
   $('stats').innerHTML =
-    statBox(st.pieces, 'pieces', bad ? 'warn' : 'ok') +
-    statBox(st.joints, 'joints (dowels)') +
+    statBox(st.pieces, t('stat.pieces'), bad ? 'warn' : 'ok') +
+    statBox(st.joints, t('stat.joints')) +
+    statBox(st.pins || '—', t('stat.pins', { list: pinLbl }), st.pins ? 'ok' : 'off') +
     num;
 }
 function showPieces() {
   modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = false;
-  pieceGroup.clear(); S.pieceMeshes = []; S.pieceLabels = []; const list = $('pieceList'); list.innerHTML = ''; showStats();
+  clearGroup(pieceGroup); S.pieceMeshes = []; S.pieceLabels = []; const list = $('pieceList'); list.innerHTML = ''; showStats();
   S.pieces.forEach((p, i) => {
     const mesh = new THREE.Mesh(p.geometry, new THREE.MeshStandardMaterial({ color: PALETTE[i % PALETTE.length], flatShading: true }));
     p.geometry.computeBoundingBox();
@@ -435,8 +636,10 @@ function showPieces() {
     const spr = makeLabelSprite(pieceLabel(p.name)); spr.userData.center = center; spr.userData.base = spr.scale.clone(); spr.position.copy(center);
     pieceGroup.add(spr); S.pieceLabels.push(spr);
     const li = document.createElement('div'); li.className = 'piece' + (p.fits ? '' : ' bad');
-    li.textContent = `${p.fits ? '✓' : '⚠'} ${pieceLabel(p.name)}  ${p.size.map(s => s.toFixed(0)).join('×')} mm`;
-    li.title = 'Hover to highlight its number · click to center it';
+    li.textContent = (p.fits ? '✓ ' : '⚠ ') + (p.kind === 'pins'
+      ? t('piece.stock', { count: p.count, d: p.d.toFixed(1), len: S.planOpts?.pinLen ?? '' })
+      : `${pieceLabel(p.name)}  ${p.size.map(s => s.toFixed(0)).join('×')} mm`);
+    li.title = t('piece.tip');
     li.onmouseenter = () => highlightPiece(i, true);
     li.onmouseleave = () => highlightPiece(i, false);
     li.onclick = () => frame(S.pieceMeshes[i]);
@@ -457,7 +660,13 @@ $('explode').oninput = () => {
 };
 $('download').onclick = () => {
   const exp = new STLExporter(), files = {};
-  for (const p of S.pieces) { const dv = exp.parse(new THREE.Mesh(p.geometry), { binary: true }); files[p.name] = new Uint8Array(dv.buffer ?? dv); }
+  for (const p of S.pieces) {
+    // the view keeps every piece where it belongs in the model; the print rotation is applied here
+    let g = p.geometry;
+    if (p.orient) { g = g.clone(); g.applyMatrix4(new THREE.Matrix4().fromArray(p.orient)); }
+    const dv = exp.parse(new THREE.Mesh(g), { binary: true }); files[p.name] = new Uint8Array(dv.buffer ?? dv);
+    if (g !== p.geometry) g.dispose();
+  }
   const blob = new Blob([zipSync(files)], { type: 'application/zip' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pieces.zip'; a.click();
 };
