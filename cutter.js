@@ -503,8 +503,9 @@ function dotPositions(label) {
   return { dots, cols: Math.max(0, maxCol - 1), rows: 5 };   // width in pitch; height = 4 gaps
 }
 // consider ONE flat bbox face (axis `ax`, side `into`); return a number plan or null
-function planFace(m, ax, into, bnd, dots, cols, rows) {
-  const coord = into === 1 ? bnd.min[ax] : bnd.max[ax];
+// `at` pins the face to a cut plane; without it the face is the bbox side.
+function planFace(m, ax, into, bnd, dots, cols, rows, at) {
+  const coord = at ?? (into === 1 ? bnd.min[ax] : bnd.max[ax]);
   const qf = new THREE.Quaternion().setFromUnitVectors(axisVec(ax), Z());
   const fwdM = new THREE.Matrix4().makeRotationFromQuaternion(qf), invM = fwdM.clone().invert();
   const needRot = ax !== 2;
@@ -543,21 +544,32 @@ function planFace(m, ax, into, bnd, dots, cols, rows) {
   if (!pts) return null;
   return { ax, into, coord, pts, invM, pitch };   // pitch = score (bigger = more legible number)
 }
-// drill the number with pyramids on the BEST flat face of the piece (where there's material)
-function engrave(m, label) {
+// drill the number with pyramids on the BEST flat face of the piece (where there's material).
+// `faces` = [{ax, into, at}] limits the choice (e.g. to cut faces, which get glued and hidden);
+// `avoid` = a face tried only when none of the others takes the number (the one on the bed).
+function engrave(m, label, faces = null, avoid = null) {
   const { Manifold } = wasm;
   const { dots, cols, rows } = dotPositions(label);
   if (!dots.length) return m;
   const bnd = manifoldBounds(m);
   const minDim = Math.min(bnd.max[0] - bnd.min[0], bnd.max[1] - bnd.min[1], bnd.max[2] - bnd.min[2]);
-  const depth = Math.max(0.5, Math.min(1.2, 0.4 * minDim));   // don't punch through a thin piece
+  const cand = faces || [0, 1, 2].flatMap(ax => [{ ax, into: 1 }, { ax, into: -1 }]);
+  const same = (f, g) => g && f.ax === g.ax && f.into === g.into;
   let best = null;
-  for (let ax = 0; ax < 3; ax++) for (const into of [1, -1]) {
-    const c = planFace(m, ax, into, bnd, dots, cols, rows);
-    if (c && (!best || c.pitch > best.pitch)) best = c;
+  for (const pass of avoid ? [false, true] : [null]) {
+    for (const f of cand) {
+      if (pass !== null && same(f, avoid) !== pass) continue;
+      const c = planFace(m, f.ax, f.into, bnd, dots, cols, rows, f.at);
+      if (c && (!best || c.pitch > best.pitch)) best = c;
+    }
+    if (best) break;
   }
   if (!best) return m;
-  const baseR = Math.max(0.6, Math.min(best.pitch * 0.42, 1.6));
+  // 45° walls: depth = half the square's side, so the dimple roof never overhangs more than 45°
+  // whichever way the face ends up on the printer (the square stays axis-aligned). Side 0.7·pitch
+  // leaves a printable wall between dots; depth is capped so a thin piece is not punched through.
+  const half = Math.min(best.pitch * 0.35, 1.2, Math.max(0.5, 0.4 * minDim));
+  const depth = half, baseR = half * Math.SQRT2;              // baseR = circumradius of the square
   const dir = [0, 0, 0]; dir[best.ax] = best.into;
   let tool = null;
   for (const [x, y] of best.pts) {
@@ -630,6 +642,18 @@ function pinStock(used, opts, usable, origin) {
 // The geometry itself is left in model space (the exploded view has to stay assembled); the
 // transform rides along on the piece and is applied when the STL is written.
 // --------------------------------------------------------------------------- //
+// The cut faces of a piece, as engrave() candidates. A split-off body only counts a side when it
+// reaches that plane (a plug peg may poke past it, hence <=).
+function cutFaces(b, idx, cuts, lo, hi) {
+  const out = [], eps = 0.01;
+  for (let a = 0; a < 3; a++) {
+    if (!cuts[a].length) continue;
+    const edges = [lo[a], ...cuts[a], hi[a]], l = edges[idx[a]], h = edges[idx[a] + 1];
+    if (idx[a] > 0 && b.min[a] <= l + eps) out.push({ ax: a, into: 1, at: l });
+    if (idx[a] < cuts[a].length && b.max[a] >= h - eps) out.push({ ax: a, into: -1, at: h });
+  }
+  return out;
+}
 function printOrientation(b, idx, cuts, usable) {
   const size = [0, 1, 2].map(a => b.max[a] - b.min[a]);
   const cand = [];
@@ -764,11 +788,15 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
       let cur = m;
       const b = manifoldBounds(cur);
       const lbl = key.replace(/,/g, '-') + (parts.length > 1 ? `-${pi + 1}` : '');   // sub-index only when split
+      const idx = key.split(',').map(Number);
+      const ori = opts.orient === false ? null : printOrientation(b, idx, cuts, usable);   // recessed engraving -> same bbox
       if (opts.number) {                          // engrave the grid number (e.g. "0-1-2") with pyramids on the best face
-        const r = engrave(cur, lbl); if (r !== cur) { cur.delete(); cur = r; nEng++; }
+        const faces = opts.numberCutOnly === false ? null : cutFaces(b, idx, cuts, lo, hi);
+        const bed = ori ? { ax: ori.axis, into: -ori.side } : null;   // side -1 = low face, drilled +1
+        const r = !faces || faces.length ? engrave(cur, lbl, faces, bed) : cur;
+        if (r !== cur) { cur.delete(); cur = r; nEng++; }
       }
-      const raw = [0, 1, 2].map(a => b.max[a] - b.min[a]);    // engraving is recessed -> bbox unchanged
-      const ori = opts.orient === false ? null : printOrientation(b, key.split(',').map(Number), cuts, usable);
+      const raw = [0, 1, 2].map(a => b.max[a] - b.min[a]);
       const size = ori ? ori.size : raw;
       if (ori) nOri++;
       out.push({ name: `piece_${lbl}.stl`, geometry: manifoldToGeometry(cur), size,

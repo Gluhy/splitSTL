@@ -56,6 +56,8 @@ const EN = {
 
   'number.label': 'Number pieces (engraved on a face)',
   'number.tip': "Engrave each piece's grid index (e.g. 0-1-2) as small dimples on a face, so you can tell which piece goes where.",
+  'numberCut.label': 'Only on cut faces',
+  'numberCut.tip': "Put the number only on a cut face: it gets glued and stays hidden, never on the model's outer wall. The face lying on the bed is used only if no other cut face has room. A piece with no cut face room stays unnumbered.",
   'orient.label': 'Orient pieces for printing',
   'orient.tip': 'Rotate each exported piece so its biggest cut face lies on the bed: flat first layer, dowel holes printing straight up, no supports on the seam. The 3D view stays assembled either way.',
   'cut.btn': '2 · Cut & export',
@@ -163,6 +165,8 @@ const PL = {
 
   'number.label': 'Numeruj części (wygrawerowane na ściance)',
   'number.tip': 'Wygrawertuj na ściance indeks każdej części (np. 0-1-2) jako drobne wgłębienia, żeby wiedzieć, co gdzie pasuje.',
+  'numberCut.label': 'Tylko na ściankach cięcia',
+  'numberCut.tip': 'Numer tylko na ściance cięcia: zostanie sklejona i schowana, nigdy na zewnętrznej ścianie modelu. Ścianka leżąca na stole jest brana tylko wtedy, gdy na żadnej innej ściance cięcia nie ma miejsca. Część bez miejsca na ściance cięcia zostaje bez numeru.',
   'orient.label': 'Ustaw części do druku',
   'orient.tip': 'Obróć każdą eksportowaną część tak, żeby jej największa ścianka cięcia leżała na stole: płaska pierwsza warstwa, otwory na kołki drukowane pionowo, nic do podpierania na szwie. Widok 3D pozostaje złożony.',
   'cut.btn': '2 · Tnij i eksportuj',

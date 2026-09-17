@@ -98,7 +98,8 @@ function opts() {
     margin: +$('margin').value, connector: $('connector').value,
     pinD: +$('pinD').value, pinLen: +$('pinLen').value,
     clearance: +$('clearance').value, minWall: +$('minWall').value, spacing: +$('spacing').value,
-    number: $('number').checked, orient: $('orient').checked, seamSearch: $('seamSearch').checked };
+    number: $('number').checked, numberCutOnly: $('numberCut').checked,
+    orient: $('orient').checked, seamSearch: $('seamSearch').checked };
 }
 const reqSdFor = d => d / 2 + +$('clearance').value + +$('minWall').value;
 const halfLen = () => +$('pinLen').value / 2 + HOLE_FIT;   // fit is judged over the DEEPER hole
@@ -585,7 +586,8 @@ $('cut').onclick = async () => {
   try {
     // geometry-critical settings come from the plan — changing the printer or the margin
     // afterwards would move the cut planes and silently drop every pin. Numbering is cosmetic.
-    const o = { ...(S.planOpts || opts()), number: $('number').checked, orient: $('orient').checked };
+    const o = { ...(S.planOpts || opts()), number: $('number').checked,
+                numberCutOnly: $('numberCut').checked, orient: $('orient').checked };
     o.cuts = S.plan.cuts;                                  // the plan owns the seam positions:
                                                            // searched, dragged, or the even split
     S.pieces = await cutAndConnect(S.geometry.clone(), o, pins, log);
