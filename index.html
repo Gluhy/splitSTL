@@ -184,6 +184,15 @@
     <input type="checkbox" id="numberCut" checked style="width:auto;margin:0"> <span data-i18n="numberCut.label">Only on cut faces</span>
   </label>
   <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:0 0 6px"
+         data-i18n-title="chamfer.tip">
+    <input type="checkbox" id="chamfer" style="width:auto;margin:0"> <span data-i18n="chamfer.label">Chamfer seam edges (groove for filler)</span>
+  </label>
+  <div id="chamferBox" style="display:none;margin:0 0 6px 22px">
+    <label data-i18n="chamferSize.label" data-i18n-title="chamferSize.tip">Chamfer size</label>
+    <input type="number" id="chamferSize" value="0.6" step="0.1" min="0.1" data-i18n-title="chamferSize.tip">
+    <span class="desc" data-i18n="chamferSize.desc">Taken off each side, so the groove is twice this wide at the surface.</span>
+  </div>
+  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:0 0 6px"
          data-i18n-title="orient.tip">
     <input type="checkbox" id="orient" checked style="width:auto;margin:0"> <span data-i18n="orient.label">Orient pieces for printing</span>
   </label>

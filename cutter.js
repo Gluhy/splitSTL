@@ -477,6 +477,156 @@ function orientedPyramid(baseR, height, dir, p) {
   const out = pyr.transform(mat4(m)); pyr.delete();
   return out;
 }
+// --------------------------------------------------------------------------- //
+// Seam chamfer — a 45° groove where a cut face meets the outer wall
+// --------------------------------------------------------------------------- //
+// Two pieces glued face to face leave a hairline seam that no filler can get into: it sits
+// proud of the surface and sands off. Taking a chamfer off the outer edge of both cut faces
+// turns that line into a V-groove with somewhere for the filler to flow, and the 45° flare
+// also prints without support when the piece stands on its cut face.
+//
+// The tool is the seam line swept with a 45° bicone: the model's cross-section at the plane,
+// its boundary thickened by a cone that is `r` wide at the plane and tapers to nothing `r` to
+// either side. Swept, that is exactly the material a chamfer takes off, as one smooth 45° face
+// rather than a stack of steps — and because the cone reaches OUTSIDE the section as far as it
+// reaches in, it still meets the wall where the wall leans away from the plane instead of
+// cutting a ledge under it and leaving it floating.
+//
+// The section is taken from the WHOLE, uncut model, so its boundary is the model's outer wall
+// and nothing else: the groove follows only the line the seam will show on the outside, never a
+// cut face that ends up glued against the next piece (grooving that would open a gap inside).
+//
+// Thin material: two chamfers on a wall thinner than 2r meet in the middle and cut the seam
+// through, so `r` is set per point of the seam from the wall's own thickness there, measured
+// across the section, and the groove eases off rather than stopping at a step. A feather edge
+// is the exception — it tapers to nothing, so there is no thickness to keep and easing off just
+// leaves the last few mm of the groove missing, which is what you notice on the part. A stretch
+// of thin seam that is worth less than CHAMFER_NIBBLE of the joint's glue area is therefore cut
+// straight through at full size: the groove runs out to the tip and takes the tip with it. A
+// thin wall or fin carrying a real share of the joint keeps its land instead.
+const CHAMFER_CORE = 0.4, CHAMFER_SEG = 16, CHAMFER_MIN = 0.05;   // leave ~an extrusion width
+const CHAMFER_NIBBLE = 0.05;      // glue area a run-out tip may cost before it is spared
+// the model's cross-section at one plane, in the frame where `ax` points along z
+function rotSec(m, ax, coord) {
+  const qf = new THREE.Quaternion().setFromUnitVectors(axisVec(ax), Z());
+  const rot = ax === 2 ? m : m.transform(mat4(new THREE.Matrix4().makeRotationFromQuaternion(qf)));
+  const sec = rot.slice(coord); if (rot !== m) rot.delete();
+  return sec;
+}
+// How thick the wall is at a point on the seam: how far it is straight in, along the inward
+// normal, to the wall FACING this one. Capped at `max` — anything past that already allows a
+// full-size chamfer, and the cap keeps the edge scan cheap on a dense, scan-derived section.
+//
+// Only a wall that faces back counts (normals within 60° of opposite). Where two walls meet at
+// a corner the probe runs into the neighbour a fraction of a millimetre along, which reads as
+// paper-thin material and would pinch the groove off at every corner of the part — but there is
+// nothing thin about the inside of a corner, and a chamfer there only rounds it.
+// `edges` is flat: ax, ay, bx, by, nx, ny per edge.
+function acrossMaterial(edges, px, py, nx, ny, max) {
+  let best = max;
+  const qx = px + nx * max, qy = py + ny * max;
+  const loX = Math.min(px, qx), hiX = Math.max(px, qx), loY = Math.min(py, qy), hiY = Math.max(py, qy);
+  for (let i = 0; i < edges.length; i += 6) {
+    const ax_ = edges[i], ay = edges[i + 1], bx = edges[i + 2], by = edges[i + 3];
+    if (Math.max(ax_, bx) < loX || Math.min(ax_, bx) > hiX) continue;
+    if (Math.max(ay, by) < loY || Math.min(ay, by) > hiY) continue;
+    if (nx * edges[i + 4] + ny * edges[i + 5] > -0.5) continue;        // a corner, not a far wall
+    const ex = bx - ax_, ey = by - ay, den = nx * ey - ny * ex;
+    if (Math.abs(den) < 1e-12) continue;                       // parallel to the probe
+    const t = ((ax_ - px) * ey - (ay - py) * ex) / den;        // along the normal
+    const u = ((ax_ - px) * ny - (ay - py) * nx) / den;        // along the edge
+    if (t > 1e-4 && t < best && u >= 0 && u <= 1) best = t;
+  }
+  return best;
+}
+function seamChamfer(src, ax, coord, w) {
+  const { Manifold } = wasm;
+  const qf = new THREE.Quaternion().setFromUnitVectors(axisVec(ax), Z());
+  const invM = new THREE.Matrix4().makeRotationFromQuaternion(qf).invert();
+  const raw = rotSec(src, ax, coord);
+  if (raw.isEmpty()) { raw.delete(); return null; }
+  const sec = raw.simplify(w / 8); raw.delete();       // a 0.1 mm wiggle is not worth its own cone
+  const secArea = sec.area();
+  // Long edges are split up: the chamfer eases off towards a thin spot over the stretch between
+  // one point and the next, and on a 40 mm edge that would drag the whole edge down with it.
+  const step = Math.max(2 * w, 0.5);
+  const polys = sec.toPolygons().map(c => {
+    const pts = c.map(p => [p.x ?? p[0], p.y ?? p[1]]), out = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      out.push(a);
+      for (let k = 1; k < Math.ceil(L / step); k++)
+        out.push([a[0] + (b[0] - a[0]) * k / Math.ceil(L / step), a[1] + (b[1] - a[1]) * k / Math.ceil(L / step)]);
+    }
+    return out;
+  }); sec.delete();
+
+  const edges = [];
+  for (const c of polys) {
+    let area = 0;
+    for (let i = 0; i < c.length; i++) { const q = c[(i + 1) % c.length]; area += c[i][0] * q[1] - q[0] * c[i][1]; }
+    const side = area > 0 ? 1 : -1;                            // CCW = material to the left
+    for (let i = 0; i < c.length; i++) {
+      const a = c[i], b = c[(i + 1) % c.length];
+      const ex = b[0] - a[0], ey = b[1] - a[1], L = Math.hypot(ex, ey) || 1;
+      edges.push(a[0], a[1], b[0], b[1], -ey / L * side, ex / L * side);
+    }
+  }
+
+  const up = Manifold.cylinder(1, 1, 0, CHAMFER_SEG, false);                      // apex at z = +1
+  const dn = Manifold.cylinder(1, 0, 1, CHAMFER_SEG, false).translate(0, 0, -1);
+  const unit = Manifold.hull([up, dn]); up.delete(); dn.delete();                 // 45° bicone, r = 1
+  const cap = 2 * w + CHAMFER_CORE;      // past this the wall takes a full-size chamfer anyway
+  const tents = [];
+  for (const c of polys) {
+    const n = c.length; if (n < 3) continue;
+    let area = 0;                                              // >0 = CCW = material to the left
+    for (let i = 0; i < n; i++) { const q = c[(i + 1) % n]; area += c[i][0] * q[1] - q[0] * c[i][1]; }
+    const side = area > 0 ? 1 : -1;
+    // Each edge measures the wall along ITS OWN normal, at both of its ends, and a vertex takes
+    // the smaller of the two edges meeting there. A vertex normal would cut the corner and read
+    // the diagonal — on a flat plate that is thickness/cos45°, enough to chamfer straight through.
+    const tv = new Array(n).fill(cap), len = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n, A = c[i], B = c[j];
+      let ex = B[0] - A[0], ey = B[1] - A[1]; const L = Math.hypot(ex, ey); if (!L) continue;
+      ex /= L; ey /= L;
+      const nx = -ey * side, ny = ex * side, d = Math.min(0.1, L / 4);   // clear of the corners
+      tv[i] = Math.min(tv[i], acrossMaterial(edges, A[0] + ex * d, A[1] + ey * d, nx, ny, cap));
+      tv[j] = Math.min(tv[j], acrossMaterial(edges, B[0] - ex * d, B[1] - ey * d, nx, ny, cap));
+      len[i] += L / 2; len[j] += L / 2;
+    }
+    const rv = tv.map(t => Math.min(w, Math.max(0, (t - CHAMFER_CORE) / 2)));   // both walls share it
+    // ...except on a stretch where the wall runs out to nothing. There is no thickness to keep at
+    // a feather edge, and easing off just leaves the last few mm of the groove missing, which is
+    // exactly what shows on the part. Such a stretch is cut through at full size — the groove
+    // runs out to the tip and takes the tip with it — as long as the joint can spare it. A thin
+    // wall or fin never gets that treatment: it is thin, but it does not run out.
+    const thin = tv.map(t => t < cap);
+    let i0 = 0; while (i0 < n && thin[i0]) i0++;
+    for (let k = 0; i0 < n && k < n;) {
+      if (!thin[(i0 + k) % n]) { k++; continue; }
+      const run = [];
+      while (k < n && thin[(i0 + k) % n]) { run.push((i0 + k) % n); k++; }
+      const runsOut = run.some(x => tv[x] < CHAMFER_CORE);
+      const lost = run.reduce((a, x) => a + tv[x] * len[x], 0);
+      if (runsOut && lost < CHAMFER_NIBBLE * secArea) for (const x of run) rv[x] = w;
+    }
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      if (rv[i] < CHAMFER_MIN && rv[j] < CHAMFER_MIN) continue;        // too thin here for a groove
+      const cone = k => unit.scale(Math.max(rv[k], CHAMFER_MIN)).translate(c[k][0], c[k][1], coord);
+      const a = cone(i), b = cone(j);
+      tents.push(Manifold.hull([a, b])); a.delete(); b.delete();
+    }
+  }
+  unit.delete();
+  if (!tents.length) return null;
+  const tool = Manifold.union(tents); tents.forEach(t => t.delete());
+  if (ax === 2) return tool;
+  const back = tool.transform(mat4(invM)); tool.delete();
+  return back;
+}
 
 
 // --------------------------------------------------------------------------- //
@@ -695,8 +845,19 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
   // opts.cuts wins when it is there: the user may have dragged a plane off the even split
   const cuts = opts.cuts || [0, 1, 2].map(ax => cutPositions(lo[ax], hi[ax], usable[ax]));
 
-  let cells = new Map([['0,0,0', geometryToManifold(geometry, log)]]);
+  const src = geometryToManifold(geometry, log);
+  let cells = new Map([['0,0,0', src]]);
   log('log.model', { size: hi.map((h, i) => (h - lo[i]).toFixed(1)).join(' × ') });
+  // Built before the cut, while the whole model is still one solid — that is what defines
+  // where a seam reaches the outer wall. `src` is consumed by the trimming below.
+  const chamfers = [];
+  if (opts.chamfer && opts.chamferSize > 0) {
+    for (let ax = 0; ax < 3; ax++)
+      for (let i = 0; i < cuts[ax].length; i++) {
+        const tool = seamChamfer(src, ax, cuts[ax][i], opts.chamferSize);
+        if (tool) chamfers.push({ ax, seg: i, tool });
+      }
+  }
   for (let ax = 0; ax < 3; ax++) {
     if (!cuts[ax].length) continue;
     const edges = [lo[ax], ...cuts[ax], hi[ax]], next = new Map();
@@ -716,6 +877,20 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
     cells = next;
   }
   log('log.cells', { n: cells.size });
+
+  if (chamfers.length) {
+    for (const { ax, seg, tool } of chamfers) {
+      for (const [key, m] of cells) {
+        const i = +key.split(',')[ax];
+        if (i !== seg && i !== seg + 1) continue;          // only the two pieces sharing the seam
+        const r = Manifold.difference(m, tool);
+        if (r.isEmpty()) { r.delete(); continue; }         // a sliver thinner than the groove: leave it whole
+        cells.set(key, r); m.delete();
+      }
+      tool.delete();
+    }
+    log('log.chamfer', { n: chamfers.length, w: opts.chamferSize.toFixed(1) });
+  }
 
   let nDowel = 0; const usedPins = [];
   if (opts.connector !== 'none') {
@@ -775,13 +950,26 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
     log('log.joints', { n: nDowel });
   }
 
-  const out = []; let nEng = 0, nSplit = 0, nOri = 0;
+  const out = []; let nEng = 0, nSplit = 0, nOri = 0, nShav = 0;
+  // A chamfer cuts loose the odd shaving: where the outer surface curves back under the seam,
+  // the groove passes beneath a lip and leaves it floating. Such a body is thinner than the
+  // chamfer and sits inside its slab — it is swarf, not a piece, and would only show up in the
+  // ZIP as an unprintable flake.
+  const shaving = b => opts.chamfer && [0, 1, 2].some(a =>
+    b.max[a] - b.min[a] <= opts.chamferSize * 1.05 &&
+    cuts[a].some(c => b.min[a] >= c - opts.chamferSize * 1.05 && b.max[a] <= c + opts.chamferSize * 1.05));
+
   for (const [key, m0] of [...cells].sort()) {
     if (m0.isEmpty()) { m0.delete(); continue; }
     // one cell may contain several DISCONNECTED bodies — split them into separate pieces (each its own number)
     let comps = null; try { comps = m0.decompose(); } catch {}
     let parts;
-    if (comps && comps.length > 1) { parts = comps; m0.delete(); nSplit++; }
+    if (comps && comps.length > 1) {
+      const keep = [], swarf = [];
+      for (const c of comps) (shaving(manifoldBounds(c)) ? swarf : keep).push(c);
+      if (keep.length) { swarf.forEach(c => { c.delete(); nShav++; }); parts = keep; } else parts = comps;
+      m0.delete(); if (parts.length > 1) nSplit++;
+    }
     else { if (comps) comps.forEach(c => c.delete()); parts = [m0]; }
     parts.forEach((m, pi) => {
       if (m.isEmpty()) { m.delete(); return; }
@@ -805,6 +993,7 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
       cur.delete();
     });
   }
+  if (nShav) log('log.shavings', { n: nShav });
   if (nSplit) log('log.split', { n: nSplit });
   if (opts.number) log('log.engraved', { n: nEng, total: out.length });
   if (nOri) log('log.oriented', { n: nOri, total: out.length });

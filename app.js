@@ -99,6 +99,7 @@ function opts() {
     pinD: +$('pinD').value, pinLen: +$('pinLen').value,
     clearance: +$('clearance').value, minWall: +$('minWall').value, spacing: +$('spacing').value,
     number: $('number').checked, numberCutOnly: $('numberCut').checked,
+    chamfer: $('chamfer').checked, chamferSize: +$('chamferSize').value,
     orient: $('orient').checked, seamSearch: $('seamSearch').checked };
 }
 const reqSdFor = d => d / 2 + +$('clearance').value + +$('minWall').value;
@@ -406,6 +407,7 @@ QUICK.forEach(v => { const b = document.createElement('button'); b.textContent =
 function paintSizes() { [...$('quickSizes').children].forEach(b => b.classList.toggle('on', +b.textContent === clampD(+$('pinD').value))); }
 function toggleManual() { $('manualBox').style.display = $('manualD').checked ? 'block' : 'none'; paintSizes(); refreshGhost(); }
 $('manualD').onchange = toggleManual;
+$('chamfer').onchange = () => { $('chamferBox').style.display = $('chamfer').checked ? 'block' : 'none'; };
 $('pinD').addEventListener('input', () => { paintSizes(); refreshGhost(); });
 
 // ----- edit mode + raycasting -----
@@ -587,7 +589,8 @@ $('cut').onclick = async () => {
     // geometry-critical settings come from the plan — changing the printer or the margin
     // afterwards would move the cut planes and silently drop every pin. Numbering is cosmetic.
     const o = { ...(S.planOpts || opts()), number: $('number').checked,
-                numberCutOnly: $('numberCut').checked, orient: $('orient').checked };
+                numberCutOnly: $('numberCut').checked, orient: $('orient').checked,
+                chamfer: $('chamfer').checked, chamferSize: +$('chamferSize').value };
     o.cuts = S.plan.cuts;                                  // the plan owns the seam positions:
                                                            // searched, dragged, or the even split
     S.pieces = await cutAndConnect(S.geometry.clone(), o, pins, log);
