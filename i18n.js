@@ -55,7 +55,7 @@ const EN = {
   'az.tip': 'Spin the tilt direction around the cut normal (which way the pin leans).',
 
   'number.label': 'Number pieces (engraved on a face)',
-  'number.tip': "Engrave each piece's grid index (e.g. 0-1-2) as small dimples on a face, so you can tell which piece goes where.",
+  'number.tip': "Engrave each piece's grid index (e.g. 0-1-2) as small dimples on a face, so you can tell which piece goes where. A single dot set apart on the baseline marks where the number starts — turn the piece so that dot is at the bottom left, then read.",
   'numberCut.label': 'Only on cut faces',
   'numberCut.tip': "Put the number only on a cut face: it gets glued and stays hidden, never on the model's outer wall. The face lying on the bed is used only if no other cut face has room. A piece with no cut face room stays unnumbered.",
   'chamfer.label': 'Chamfer seam edges (groove for filler)',
@@ -171,7 +171,7 @@ const PL = {
   'az.tip': 'Obróć kierunek pochylenia wokół normalnej cięcia (w którą stronę kołek się kładzie).',
 
   'number.label': 'Numeruj części (wygrawerowane na ściance)',
-  'number.tip': 'Wygrawertuj na ściance indeks każdej części (np. 0-1-2) jako drobne wgłębienia, żeby wiedzieć, co gdzie pasuje.',
+  'number.tip': 'Wygrawertuj na ściance indeks każdej części (np. 0-1-2) jako drobne wgłębienia, żeby wiedzieć, co gdzie pasuje. Pojedyncza kropka odsunięta w dolnym rzędzie pokazuje, gdzie numer się zaczyna — obróć część tak, żeby kropka była na dole po lewej, i czytaj.',
   'numberCut.label': 'Tylko na ściankach cięcia',
   'numberCut.tip': 'Numer tylko na ściance cięcia: zostanie sklejona i schowana, nigdy na zewnętrznej ścianie modelu. Ścianka leżąca na stole jest brana tylko wtedy, gdy na żadnej innej ściance cięcia nie ma miejsca. Część bez miejsca na ściance cięcia zostaje bez numeru.',
   'chamfer.label': 'Fazuj krawędzie szwów (rowek na szpachlę)',

@@ -640,9 +640,14 @@ const DOT_DIGITS = {
   '6': ['111', '100', '111', '101', '111'], '7': ['111', '001', '010', '010', '010'],
   '8': ['111', '101', '111', '101', '111'], '9': ['111', '101', '111', '001', '111'],
 };
+// A lone dot on the baseline, set apart before the first digit, marks which end the number starts
+// at: read from the dot. The label goes on whichever cut face has room, so a loose piece gives no
+// clue which way is up, and read the wrong way round "0-5-8" is a perfectly plausible "8-5-0".
+// Nothing else in the layout stands alone, so the dot cannot be taken for part of a digit.
+const MARK_GAP = 3;                                          // columns from the dot to the first digit
 // dot positions [column, row] in pitch units; u to the right, v up. '-' = a gap.
-function dotPositions(label) {
-  const dots = []; let col = 0, maxCol = 0;
+export function dotPositions(label) {
+  const dots = [[0, 0]]; let col = MARK_GAP, maxCol = 0;     // [0,0] = the read-from-here dot
   for (const ch of label) {
     if (ch === '-') { col += 2; continue; }                 // axis separator = wider gap
     const g = DOT_DIGITS[ch]; if (!g) { col += 4; continue; }
@@ -650,7 +655,8 @@ function dotPositions(label) {
       if (g[r][c] === '1') dots.push([col + c, 4 - r]);      // row 0 = top -> v=4
     col += 4; maxCol = col;                                  // 3 columns + 1 gap
   }
-  return { dots, cols: Math.max(0, maxCol - 1), rows: 5 };   // width in pitch; height = 4 gaps
+  if (!maxCol) return { dots: [], cols: 0, rows: 5 };        // no digits -> nothing to mark either
+  return { dots, cols: maxCol - 1, rows: 5 };                // width in pitch; height = 4 gaps
 }
 // consider ONE flat bbox face (axis `ax`, side `into`); return a number plan or null
 // `at` pins the face to a cut plane; without it the face is the bbox side.
@@ -685,8 +691,13 @@ function planFace(m, ax, into, bnd, dots, cols, rows, at) {
   const cx = sx / ncnt, cy = sy / ncnt;
   const ew = bmax[0] - bmin[0], eh = bmax[1] - bmin[1], swap = eh > ew;
   const faceLong = Math.max(ew, eh), faceShort = Math.min(ew, eh);
+  // Reading a face means looking ALONG the drill direction, so `into` flips the image's handedness;
+  // `swap` flips it again, being a transpose of u and v. Where the two flips agree the label comes
+  // out mirrored rather than merely turned — and a mirrored 2 is exactly a 5. Negate one axis there,
+  // so every face carries a plain rotation of the layout, whichever way it faces.
+  const mir = into === (swap ? 1 : -1) ? 1 : -1;
   const place = pitch => dots.map(([u, v]) => {
-    const lu = (u - cols / 2) * pitch, lv = (v - (rows - 1) / 2) * pitch;
+    const lu = (u - cols / 2) * pitch, lv = (v - (rows - 1) / 2) * pitch * mir;
     return swap ? [cx + lv, cy + lu] : [cx + lu, cy + lv];
   });
   let pitch = Math.min(faceLong * 0.9 / Math.max(cols, 1), faceShort * 0.85 / (rows - 1), 3.0), pts = null;
