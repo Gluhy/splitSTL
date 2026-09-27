@@ -98,6 +98,7 @@ function opts() {
     margin: +$('margin').value, connector: $('connector').value,
     pinD: +$('pinD').value, pinLen: +$('pinLen').value,
     clearance: +$('clearance').value, minWall: +$('minWall').value, spacing: +$('spacing').value,
+    tongueW: +$('tongueW').value, tongueH: +$('tongueH').value,
     number: $('number').checked, numberCutOnly: $('numberCut').checked,
     chamfer: $('chamfer').checked, chamferSize: +$('chamferSize').value,
     orient: $('orient').checked, seamSearch: $('seamSearch').checked };
@@ -213,7 +214,7 @@ $('plan').onclick = async () => {
     buildPlanes(); buildPinsFromPlan(); selectPin(null);
     clearGroup(pieceGroup); $('stats').innerHTML = '';
     modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = true;
-    $('editToggle').disabled = false; $('cut').disabled = false; $('download').disabled = true;
+    $('editToggle').disabled = S.planOpts.connector === 'tongue'; $('cut').disabled = false;   // edit mode is for pins $('download').disabled = true;
     let n = 0; S.pins.forEach(a => n += a.length);
     const o = opts();
     log('log.plan', { planes: S.plan.planes.length, pins: n });
@@ -223,7 +224,7 @@ $('plan').onclick = async () => {
     }
     const ds = [...new Set([...S.pins.values()].flat().map(p => p.d))].sort((a, b) => a - b);
     if (ds.length) log('log.used', { list: ds.map(d => d.toFixed(1)).join(', ') });
-    if (o.connector !== 'none') log(n ? 'log.mixed' : 'log.noPins');
+    if (o.connector === 'auto') log(n ? 'log.mixed' : 'log.noPins');
   } catch (err) { log('log.error', { msg: errText(err) }); console.error(err); }
   $('plan').disabled = false;
 };
@@ -408,6 +409,11 @@ function paintSizes() { [...$('quickSizes').children].forEach(b => b.classList.t
 function toggleManual() { $('manualBox').style.display = $('manualD').checked ? 'block' : 'none'; paintSizes(); refreshGhost(); }
 $('manualD').onchange = toggleManual;
 $('chamfer').onchange = () => { $('chamferBox').style.display = $('chamfer').checked ? 'block' : 'none'; };
+$('connector').onchange = () => {
+  const c = $('connector').value;
+  $('pinBox').style.display = c === 'auto' ? 'block' : 'none';
+  $('tongueBox').style.display = c === 'tongue' ? 'block' : 'none';
+};
 $('pinD').addEventListener('input', () => { paintSizes(); refreshGhost(); });
 
 // ----- edit mode + raycasting -----

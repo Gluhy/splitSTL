@@ -1,4 +1,4 @@
-// cutter.js — cut planning + joints (dowels: dowel / plug), boolean cutting.
+// cutter.js — cut planning + joints (dowels: dowel / plug; tongue and groove), boolean cutting.
 // Boolean + 2D offset: manifold-3d. Signed distance: three-mesh-bvh.
 
 import * as THREE from 'three';
@@ -410,18 +410,22 @@ function materialPoints(sd, lo, hi, axis, coord, opts, halfLen, cuts) {
   return { chosen, maxSd };
 }
 
+const cellRoom = (usable, opts) => usable.map(v => v - (opts.connector === 'tongue' ? opts.tongueH : 0));
 export async function planCuts(geometry, opts, log = () => {}) {
   await initManifold();
   geometry.computeBoundingBox();
   const bb = geometry.boundingBox, lo = [bb.min.x, bb.min.y, bb.min.z], hi = [bb.max.x, bb.max.y, bb.max.z];
   const usable = opts.build.map(v => v - 2 * opts.margin);
   if (usable.some(v => v <= 0)) { const e = new Error('Margin too large for the build volume.'); e.key = 'err.margin'; throw e; }
+  // A rib stands proud of its piece, so the cells are spaced that much shorter: a piece carrying
+  // one still fits. The plan hands this on, so a dragged seam is held to it too.
+  const room = cellRoom(usable, opts);
   const mm = geometryToManifold(geometry, log);
   const clean = manifoldToGeometry(mm); mm.delete();   // consistent normals -> correct sd sign
   const sd = makeSDF(clean);
   const cuts = opts.cuts || [0, 1, 2].map(ax => opts.seamSearch
-    ? bestCuts(sd, lo, hi, ax, usable[ax], opts)
-    : cutPositions(lo[ax], hi[ax], usable[ax]));
+    ? bestCuts(sd, lo, hi, ax, room[ax], opts)
+    : cutPositions(lo[ax], hi[ax], room[ax]));
   const planes = []; for (let ax = 0; ax < 3; ax++) for (const coord of cuts[ax]) planes.push({ axis: ax, coord });
 
   const halfLen = opts.pinLen / 2 + HOLE_FIT;      // fit is measured over the DEEPER hole
@@ -435,7 +439,7 @@ export async function planCuts(geometry, opts, log = () => {}) {
     pins.set(key, r.chosen);                                   // every pin carries its own Ø
     if (r.chosen.length) planeD.set(key, Math.max(...r.chosen.map(p => p.d)));
   }
-  return { lo, hi, usable, cuts, planes, pins, sd, maxWall: 2 * maxSd, planeD };
+  return { lo, hi, usable: room, cuts, planes, pins, sd, maxWall: 2 * maxSd, planeD };
 }
 
 // Re-place the auto pins on a single seam — used when a cut plane is dragged to a new spot.
@@ -628,6 +632,112 @@ function seamChamfer(src, ax, coord, w) {
   return back;
 }
 
+// --------------------------------------------------------------------------- //
+// Tongue and groove — a rib with a trapezoid profile on one side of the seam, a matching groove
+// on the other, pushed straight together like a dowel. It follows the seam line, set in from the
+// outer wall, so a hollow or shell-like part too thin for any pin still gets a joint that lines
+// the pieces up all the way round. The taper centres the rib as it goes in, and both halves print
+// without support standing on the cut face: the rib narrows as it rises, and the groove closes
+// over like a roof down to a short bridge the width of the tip.
+// --------------------------------------------------------------------------- //
+export const TONGUE_TIP = 0.5;       // tip width as a share of a full-width base: 4 × 3 mm leans the sides ~18°
+const TONGUE_MIN_BASE = 1.2;         // a foot narrower than this is not a rib, it is a burr
+const TONGUE_SINK = 0.2;             // rib and groove start this far past the face: no coplanar boolean
+// The prism over `foot`, up to `h`, with every side leaning in by `slope` mm per mm of height: a
+// cone (a point at the foot, `slope`·h across at the top) swept round the outline — a hull per
+// outline edge, the way the seam chamfer is built — and taken away. Where the foot is too narrow
+// for the full height, the two sides meet and the rib ends in a ridge, lower but still a rib: a
+// wall a rib of full size will not fit in still gets one sized to it.
+function taperedBand(foot, h, slope) {
+  const { Manifold } = wasm;
+  const unit = Manifold.cylinder(h + 0.02, 0, slope * (h + 0.02), 16, false).translate([0, 0, -0.01]);
+  const cones = [];
+  for (const c of foot.toPolygons()) {
+    const pts = c.map(p => [p.x ?? p[0], p.y ?? p[1]]);
+    for (let i = 0; i < pts.length; i++) {
+      const a = unit.translate([...pts[i], 0]), b = unit.translate([...pts[(i + 1) % pts.length], 0]);
+      cones.push(Manifold.hull([a, b])); a.delete(); b.delete();
+    }
+  }
+  unit.delete();
+  const prism = Manifold.extrude(foot, h), sides = Manifold.union(cones); cones.forEach(q => q.delete());
+  const out = prism.subtract(sides); prism.delete(); sides.delete();
+  return out;
+}
+// The seam at `coord` on axis `ax`, in world space: { [+1]: { tongue, groove }, [-1]: ... } for each
+// way asked for in `dirs`, or null where the wall is too thin to hold a groove. +1 = the rib is on
+// the low piece and rises into the high one, -1 = the other way round.
+function seamTongue(src, ax, coord, opts, cuts, dirs) {
+  const { Manifold } = wasm;
+  const W = opts.tongueW, H = opts.tongueH, c = opts.clearance;
+  const slope = W * (1 - TONGUE_TIP) / 2 / H;             // how far each side leans in per mm up
+  const Hg = H + HOLE_FIT;                                 // the groove is deeper: faces meet first
+  // min. wall kept outside the groove, the groove clearance outside the rib; the seam chamfer
+  // takes its share first
+  const m = opts.minWall + c + (opts.chamfer ? opts.chamferSize : 0);
+  const raw = rotSec(src, ax, coord);
+  if (raw.isEmpty()) { raw.delete(); return null; }
+  const sec = raw.simplify(0.05); raw.delete();
+  // The rib's foot: a band W wide just inside the wall. On a wall thinner than 2(m + W) the bands
+  // from either face overlap and merge into one rib down the middle, as wide as the wall allows.
+  const a = sec.offset(-m, 'Round'), b = sec.offset(-(m + W), 'Round'); sec.delete();
+  const band = a.subtract(b); a.delete(); b.delete();
+  const f0 = band.offset(-TONGUE_MIN_BASE / 2, 'Round'); band.delete();   // open away the slivers
+  const f1 = f0.offset(TONGUE_MIN_BASE / 2, 'Round'); f0.delete();
+  const foot = f1.simplify(0.05); f1.delete();            // a scan's wiggle is not worth a hull apiece
+  if (foot.isEmpty() || foot.area() < TONGUE_MIN_BASE * 5 * W) { foot.delete(); return null; }
+  // the groove: the foot grown by the clearance, on the same slope — so it clears the rib by at
+  // least that much at every height, and runs out a little higher where the rib ends in a ridge
+  const gfoot = foot.offset(c, 'Round');
+  const sink = (f, h) => {                                // start a hair under the face, same slope
+    const g = f.offset(TONGUE_SINK * slope, 'Round'), out = taperedBand(g, h + TONGUE_SINK, slope); g.delete();
+    const o2 = out.translate(0, 0, -TONGUE_SINK); out.delete(); return o2;
+  };
+  const up = { tongue: sink(foot, H), groove: sink(gfoot, Hg) };
+  foot.delete(); gfoot.delete();
+  const invM = ax === 2 ? null : mat4(new THREE.Matrix4().makeRotationFromQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(axisVec(ax), Z())).invert());
+  const place = (m, d) => {                               // flipped for -1, onto the seam, back to world
+    const f = d > 0 ? m : m.mirror([0, 0, 1]), t = f.translate(0, 0, coord); if (f !== m) f.delete();
+    if (!invM) return t;
+    const w = t.transform(invM); t.delete(); return w;
+  };
+  const out = {};
+  for (const d of dirs) out[d] = { tongue: place(up.tongue, d), groove: place(up.groove, d) };
+  up.tongue.delete(); up.groove.delete();
+  let any = false;
+  for (const d of dirs) { const r = finishTongue(out[d], src, ax, opts, cuts, Hg); if (r) any = true; else delete out[d]; }
+  return any ? out : null;
+}
+// Keep clear of every perpendicular seam by the depth of ITS groove plus a wall, so the two
+// joints never cut into each other, and the rib never straddles two pieces; then trim to the model.
+function finishTongue(r, src, ax, opts, cuts, Hg) {
+  const { Manifold } = wasm;
+  const c = opts.clearance;
+  let { tongue, groove } = r;
+  const bb = manifoldBounds(src), span = [0, 1, 2].map(k => bb.max[k] - bb.min[k] + 20);
+  const slab = (k, at, half) => {
+    const size = span.slice(); size[k] = 2 * half;
+    const ctr = [0, 1, 2].map(j => (bb.min[j] + bb.max[j]) / 2); ctr[k] = at;
+    return Manifold.cube(size, true).translate(ctr);
+  };
+  const keepOff = Hg + opts.minWall;
+  for (let k = 0; k < 3; k++) {
+    if (k === ax) continue;
+    for (const at of cuts[k]) {
+      const st = slab(k, at, keepOff), sg = slab(k, at, keepOff - c);   // groove runs c past the rib's end
+      const t2 = tongue.subtract(st), g2 = groove.subtract(sg);
+      tongue.delete(); groove.delete(); st.delete(); sg.delete(); tongue = t2; groove = g2;
+    }
+  }
+  // Where the high piece leans in over the seam, the rib would stick out of its surface: trim it
+  // to the model, so at worst it ends flush there.
+  const inside = tongue.intersect(src); tongue.delete(); tongue = inside;
+  if (tongue.isEmpty()) { tongue.delete(); groove.delete(); return null; }
+  r.tongue = tongue; r.groove = groove;
+  return r;
+}
+
 
 // --------------------------------------------------------------------------- //
 // Piece numbering — engraved (recessed) grid number on a cut face
@@ -666,7 +776,12 @@ function planFace(m, ax, into, bnd, dots, cols, rows, at) {
   const fwdM = new THREE.Matrix4().makeRotationFromQuaternion(qf), invM = fwdM.clone().invert();
   const needRot = ax !== 2;
   const rot = needRot ? m.transform(mat4(fwdM)) : m;
-  const near = rot.slice(coord + 0.3 * into); if (needRot) rot.delete();   // material just under the face
+  let near = rot.slice(coord + 0.3 * into);                                // material just under the face
+  // ...less whatever stands on it: a tongue rises from the face, and a dot drilled under it
+  // would be sealed in, not engraved
+  const over = rot.slice(coord - 0.3 * into); if (needRot) rot.delete();
+  if (!over.isEmpty()) { const lid = over.offset(0.7, 'Round'), n2 = near.subtract(lid); lid.delete(); near.delete(); near = n2; }
+  over.delete();
   if (near.isEmpty()) { near.delete(); return null; }
   let inner = near.offset(-1.4);                                           // keep dots away from the edge
   if (inner.isEmpty()) { inner.delete(); inner = near.offset(-0.7); }      // thin wall -> smaller margin
@@ -815,7 +930,8 @@ function cutFaces(b, idx, cuts, lo, hi) {
   }
   return out;
 }
-function printOrientation(b, idx, cuts, usable) {
+// Every cut face the piece could stand on and still fit the bed, best first (the biggest face).
+function bedFaces(b, idx, cuts, usable) {
   const size = [0, 1, 2].map(a => b.max[a] - b.min[a]);
   const cand = [];
   for (let a = 0; a < 3; a++) {
@@ -826,7 +942,7 @@ function printOrientation(b, idx, cuts, usable) {
     if (idx[a] < cuts[a].length) cand.push({ a, s: 1, area });     // ...and on the high side
   }
   cand.sort((x, y) => y.area - x.area || x.a - y.a || x.s - y.s);
-  const corner = new THREE.Vector3();
+  const corner = new THREE.Vector3(), out = [];
   for (const c of cand) {
     const n = new THREE.Vector3().setComponent(c.a, c.s);
     const q = new THREE.Quaternion().setFromUnitVectors(n, new THREE.Vector3(0, 0, -1));
@@ -838,9 +954,48 @@ function printOrientation(b, idx, cuts, usable) {
     if (!s2.every((v, i) => v <= usable[i] + 1e-3)) continue;      // would not fit standing that way
     const ctr = box.getCenter(new THREE.Vector3());                // drop it on the bed, centred in X/Y
     m.premultiply(new THREE.Matrix4().makeTranslation(-ctr.x, -ctr.y, -box.min.z));
-    return { matrix: m, size: s2, axis: c.a, side: c.s };
+    out.push({ matrix: m, size: s2, axis: c.a, side: c.s });
   }
-  return null;
+  return out;
+}
+// `ribbed(a, s)` = that cut face carries a tongue: standing on it would rest the piece on the rib.
+function printOrientation(b, idx, cuts, usable, ribbed = () => false) {
+  return bedFaces(b, idx, cuts, usable).find(f => !ribbed(f.axis, f.side)) || null;
+}
+
+// Which side of each seam the rib goes on. Always the low piece would leave a piece with ribs on
+// every cut face — a corner piece of a grid, say — and nothing flat to print on. So each piece is
+// matched to one seam it gets the groove of, trying its best bed face first, by augmenting paths:
+// a piece whose faces are all taken reclaims one from a neighbour that has another to go to. Only
+// where there are fewer seams than pieces (a single row of cuts) must one piece go without.
+// Returns Map("ax|lowCellKey" -> +1 rib on the low piece, -1 rib on the high one).
+function ribSides(cells, cuts, usable) {
+  const want = new Map();
+  for (const [k, m] of cells) {
+    const idx = k.split(',').map(Number), es = [];
+    for (const f of bedFaces(manifoldBounds(m), idx, cuts, usable)) {
+      const nb = idx.slice(); nb[f.axis] += f.side;
+      if (!cells.has(nb.join(','))) continue;
+      es.push(`${f.axis}|${f.side > 0 ? k : nb.join(',')}`);
+    }
+    want.set(k, es);
+  }
+  const owner = new Map();                                 // edge -> the piece that gets its groove
+  const claim = (k, seen) => {
+    for (const e of want.get(k)) {
+      if (seen.has(e)) continue; seen.add(e);
+      const o = owner.get(e);
+      if (o === undefined || claim(o, seen)) { owner.set(e, k); return true; }
+    }
+    return false;
+  };
+  // fewest options first; on a tie the higher piece claims first, which keeps the rib on the low
+  // piece wherever nothing forces otherwise
+  for (const k of [...want.keys()].sort((x, y) => want.get(x).length - want.get(y).length || (x < y ? 1 : -1)))
+    claim(k, new Set());
+  const side = new Map();
+  for (const [e, k] of owner) side.set(e, e.split('|')[1] === k ? -1 : 1);   // groove on the low piece -> rib on the high one
+  return side;
 }
 
 // --------------------------------------------------------------------------- //
@@ -854,10 +1009,13 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
   const bb = geometry.boundingBox, lo = [bb.min.x, bb.min.y, bb.min.z], hi = [bb.max.x, bb.max.y, bb.max.z];
   const usable = opts.build.map(v => v - 2 * opts.margin);
   // opts.cuts wins when it is there: the user may have dragged a plane off the even split
-  const cuts = opts.cuts || [0, 1, 2].map(ax => cutPositions(lo[ax], hi[ax], usable[ax]));
+  const room = cellRoom(usable, opts);
+  const cuts = opts.cuts || [0, 1, 2].map(ax => cutPositions(lo[ax], hi[ax], room[ax]));
 
   const src = geometryToManifold(geometry, log);
-  let cells = new Map([['0,0,0', src]]);
+  // the tongue is built from the whole model too, but only once the pieces show which way each
+  // rib goes — so the trimming works on a copy
+  let cells = new Map([['0,0,0', opts.connector === 'tongue' ? src.translate([0, 0, 0]) : src]]);
   log('log.model', { size: hi.map((h, i) => (h - lo[i]).toFixed(1)).join(' × ') });
   // Built before the cut, while the whole model is still one solid — that is what defines
   // where a seam reaches the outer wall. `src` is consumed by the trimming below.
@@ -903,8 +1061,52 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
     log('log.chamfer', { n: chamfers.length, w: opts.chamferSize.toFixed(1) });
   }
 
+  // Each pair of pieces across a seam gets the rib on the side ribSides picked, cut to the pair's
+  // cell so it lands on the piece it grew from; the groove goes into the other one.
+  const ribOn = new Set();                                 // "cellKey|ax|side" faces carrying a rib
+  let nTongue = 0;
+  if (opts.connector === 'tongue') {
+    const side = ribSides(cells, cuts, usable);
+    for (let ax = 0; ax < 3; ax++)
+      for (let seg = 0; seg < cuts[ax].length; seg++) {
+        const pairs = [];
+        for (const k of cells.keys()) {
+          const idx = k.split(',').map(Number);
+          if (idx[ax] !== seg) continue;
+          const up = idx.slice(); up[ax] = seg + 1;
+          if (cells.has(up.join(','))) pairs.push({ idx, lowK: k, highK: up.join(','), d: side.get(`${ax}|${k}`) ?? 1 });
+        }
+        if (!pairs.length) continue;
+        const T = seamTongue(src, ax, cuts[ax][seg], opts, cuts, [...new Set(pairs.map(p => p.d))]);
+        if (!T) continue;
+        let placed = false;
+        for (const { idx, lowK, highK, d } of pairs) {
+          if (!T[d]) continue;
+          const bmin = [], bmax = [];
+          for (let a = 0; a < 3; a++) {
+            const e = [lo[a] - 1, ...cuts[a], hi[a] + 1];
+            bmin.push(a === ax ? lo[a] - 1 : e[idx[a]]); bmax.push(a === ax ? hi[a] + 1 : e[idx[a] + 1]);
+          }
+          const box = Manifold.cube(bmax.map((v, a) => v - bmin[a])).translate(bmin);
+          const rib = T[d].tongue.intersect(box), groove = T[d].groove.intersect(box); box.delete();
+          const [rk, gk] = d > 0 ? [lowK, highK] : [highK, lowK];
+          if (!rib.isEmpty()) {
+            const m = cells.get(rk); cells.set(rk, Manifold.union(m, rib)); m.delete();
+            ribOn.add(`${rk}|${ax}|${d}`); placed = true;
+          }
+          const g = cells.get(gk); cells.set(gk, Manifold.difference(g, groove)); g.delete();
+          rib.delete(); groove.delete();
+        }
+        for (const d in T) { T[d].tongue.delete(); T[d].groove.delete(); }
+        if (placed) nTongue++;
+      }
+    src.delete();
+  }
+  const nPlanes = cuts.reduce((a, c) => a + c.length, 0);
+  if (opts.connector === 'tongue') log('log.tongue', { n: nTongue, total: nPlanes });
+
   let nDowel = 0; const usedPins = [];
-  if (opts.connector !== 'none') {
+  if (opts.connector !== 'none' && opts.connector !== 'tongue') {
     for (let ax = 0; ax < 3; ax++) {
       if (!cuts[ax].length) continue;
       const edges = [lo[ax], ...cuts[ax], hi[ax]];
@@ -961,7 +1163,7 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
     log('log.joints', { n: nDowel });
   }
 
-  const out = []; let nEng = 0, nSplit = 0, nOri = 0, nShav = 0;
+  const out = [], noBed = []; let nEng = 0, nSplit = 0, nOri = 0, nShav = 0;
   // A chamfer cuts loose the odd shaving: where the outer surface curves back under the seam,
   // the groove passes beneath a lip and leaves it floating. Such a body is thinner than the
   // chamfer and sits inside its slab — it is swarf, not a piece, and would only show up in the
@@ -988,7 +1190,9 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
       const b = manifoldBounds(cur);
       const lbl = key.replace(/,/g, '-') + (parts.length > 1 ? `-${pi + 1}` : '');   // sub-index only when split
       const idx = key.split(',').map(Number);
-      const ori = opts.orient === false ? null : printOrientation(b, idx, cuts, usable);   // recessed engraving -> same bbox
+      const ribbed = (a, sd) => ribOn.has(`${key}|${a}|${sd}`);
+      const ori = opts.orient === false ? null : printOrientation(b, idx, cuts, usable, ribbed);
+      if (!ori && opts.orient !== false && bedFaces(b, idx, cuts, usable).length) noBed.push(lbl);   // only ribs to stand on   // recessed engraving -> same bbox
       if (opts.number) {                          // engrave the grid number (e.g. "0-1-2") with pyramids on the best face
         const faces = opts.numberCutOnly === false ? null : cutFaces(b, idx, cuts, lo, hi);
         const bed = ori ? { ax: ori.axis, into: -ori.side } : null;   // side -1 = low face, drilled +1
@@ -1004,6 +1208,7 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
       cur.delete();
     });
   }
+  if (noBed.length) log('log.noBedFace', { list: noBed.join(', ') });
   if (nShav) log('log.shavings', { n: nShav });
   if (nSplit) log('log.split', { n: nSplit });
   if (opts.number) log('log.engraved', { n: nEng, total: out.length });
@@ -1012,7 +1217,7 @@ export async function cutAndConnect(geometry, opts, pinsByPlane, log = () => {})
   const stock = usedPins.length ? pinStock(usedPins, opts, usable, [hi[0] + 20, lo[1], lo[2]]) : [];
   for (const s of stock) { out.push(s); log('log.stock', { count: s.count, d: s.d.toFixed(1), len: opts.pinLen, name: s.name }); }
   log(stock.length ? 'log.donePins' : 'log.done', { n: nPieces, pins: usedPins.length });
-  out.stats = { pieces: nPieces, joints: nDowel, numbered: !!opts.number, engraved: nEng,
+  out.stats = { pieces: nPieces, joints: nDowel + nTongue, numbered: !!opts.number, engraved: nEng,
                 oriented: nOri, pins: usedPins.length,
                 pinSizes: [...new Map(stock.map(s => [s.d, 0])).keys()]
                   .map(d => ({ d, count: stock.filter(s => s.d === d).reduce((a, s) => a + s.count, 0) })) };

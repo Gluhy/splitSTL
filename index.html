@@ -78,23 +78,25 @@
   <label data-i18n="connector.label" data-i18n-title="connector.tip">Joint type</label>
   <select id="connector" data-i18n-title="connector.tip">
     <option value="auto" selected data-i18n="connector.dowels">Dowels — pins printed as their own STL</option>
+    <option value="tongue" data-i18n="connector.tongue">Tongue &amp; groove — tapered rib along the seam</option>
     <option value="none" data-i18n="connector.none">None — flat glue joint</option>
   </select>
 
   <div class="row3">
+    <div><label data-i18n="clearance.label">Clearance</label><input type="number" id="clearance" value="0.15" step="0.05">
+      <span class="desc" data-i18n="clearance.desc">Pin-to-hole gap. More = looser, easier to assemble.</span></div>
+    <div><label data-i18n="minWall.label">Min. wall</label><input type="number" id="minWall" value="1.2" step="0.1">
+      <span class="desc" data-i18n="minWall.desc">Material kept around the hole. Thinner seams get no pin.</span></div>
+    <div></div>
+  </div>
+  <div id="pinBox">
+  <div class="row3" style="margin-top:8px">
     <div><label data-i18n="pinD.label">Pin Ø</label><input type="number" id="pinD" value="5" step="0.5">
       <span class="desc" data-i18n="pinD.desc">Maximum. Each pin shrinks to the largest Ø the wall takes.</span></div>
     <div><label data-i18n="pinLen.label">Length</label><input type="number" id="pinLen" value="14">
       <span class="desc" data-i18n="pinLen.desc">Total, centred on the seam — half into each piece.</span></div>
-    <div><label data-i18n="clearance.label">Clearance</label><input type="number" id="clearance" value="0.15" step="0.05">
-      <span class="desc" data-i18n="clearance.desc">Pin-to-hole gap. More = looser, easier to assemble.</span></div>
-  </div>
-  <div class="row3" style="margin-top:8px">
-    <div><label data-i18n="minWall.label">Min. wall</label><input type="number" id="minWall" value="1.2" step="0.1">
-      <span class="desc" data-i18n="minWall.desc">Material kept around the hole. Thinner seams get no pin.</span></div>
     <div><label data-i18n="spacing.label">Spacing</label><input type="number" id="spacing" value="40">
       <span class="desc" data-i18n="spacing.desc">Target gap between pins along one seam.</span></div>
-    <div></div>
   </div>
 
   <figure id="pinDiagram" style="margin:10px 0 0">
@@ -139,6 +141,16 @@
     </svg>
     <figcaption data-i18n="diagram.caption">Hover a field above — clearance exaggerated</figcaption>
   </figure>
+  </div>
+  <div id="tongueBox" style="display:none">
+  <div class="row3" style="margin-top:8px">
+    <div><label data-i18n="tongueW.label" data-i18n-title="tongueW.tip">Rib width</label><input type="number" id="tongueW" value="4" step="0.5" min="1.6" data-i18n-title="tongueW.tip">
+      <span class="desc" data-i18n="tongueW.desc">At the base; the tip is half that.</span></div>
+    <div><label data-i18n="tongueH.label" data-i18n-title="tongueH.tip">Rib height</label><input type="number" id="tongueH" value="3" step="0.5" min="1" data-i18n-title="tongueH.tip">
+      <span class="desc" data-i18n="tongueH.desc">How far it reaches into the other piece.</span></div>
+    <div></div>
+  </div>
+  </div>
 
   <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:10px 0 6px"
          data-i18n-title="seam.tip">
