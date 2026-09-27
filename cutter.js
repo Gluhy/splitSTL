@@ -706,26 +706,38 @@ function seamTongue(src, ax, coord, opts, cuts, dirs) {
   for (const d of dirs) out[d] = { tongue: place(up.tongue, d), groove: place(up.groove, d) };
   up.tongue.delete(); up.groove.delete();
   let any = false;
-  for (const d of dirs) { const r = finishTongue(out[d], src, ax, opts, cuts, Hg); if (r) any = true; else delete out[d]; }
+  for (const d of dirs) { const r = finishTongue(out[d], src, ax, opts, cuts, Hg, coord, d); if (r) any = true; else delete out[d]; }
   return any ? out : null;
 }
 // Keep clear of every perpendicular seam by the depth of ITS groove plus a wall, so the two
 // joints never cut into each other, and the rib never straddles two pieces; then trim to the model.
-function finishTongue(r, src, ax, opts, cuts, Hg) {
+// The end of a rib, where it stops short of a perpendicular seam, is a 45° ramp rather than a
+// square step: the rib gets shorter as it rises, so whichever way the piece is stood to print,
+// the end is never a flat overhang. The groove ends on the same ramp, the clearance out from it.
+function finishTongue(r, src, ax, opts, cuts, Hg, coord, d) {
   const { Manifold } = wasm;
   const c = opts.clearance;
   let { tongue, groove } = r;
   const bb = manifoldBounds(src), span = [0, 1, 2].map(k => bb.max[k] - bb.min[k] + 20);
-  const slab = (k, at, half) => {
-    const size = span.slice(); size[k] = 2 * half;
-    const ctr = [0, 1, 2].map(j => (bb.min[j] + bb.max[j]) / 2); ctr[k] = at;
-    return Manifold.cube(size, true).translate(ctr);
+  const ctr = [0, 1, 2].map(j => (bb.min[j] + bb.max[j]) / 2);
+  // the region kept clear round the seam at `at` on axis k: `half` either side of it at the cut
+  // face, widening 1 mm per mm the rib stands off it
+  const L = Hg + 1;
+  const wedge = (k, at, half) => {
+    const slice = (t, w) => {                              // t along the rib, w either side of `at`
+      const size = span.slice(); size[k] = 2 * w; size[ax] = 0.01;
+      const p = ctr.slice(); p[k] = at; p[ax] = coord + d * t;
+      return Manifold.cube(size, true).translate(p);
+    };
+    const a = slice(-1, half - 1), b = slice(L, half + L), h = Manifold.hull([a, b]);
+    a.delete(); b.delete();
+    return h;
   };
   const keepOff = Hg + opts.minWall;
   for (let k = 0; k < 3; k++) {
     if (k === ax) continue;
     for (const at of cuts[k]) {
-      const st = slab(k, at, keepOff), sg = slab(k, at, keepOff - c);   // groove runs c past the rib's end
+      const st = wedge(k, at, keepOff), sg = wedge(k, at, keepOff - c * Math.SQRT2);   // clearance square to the ramp
       const t2 = tongue.subtract(st), g2 = groove.subtract(sg);
       tongue.delete(); groove.delete(); st.delete(); sg.delete(); tongue = t2; groove = g2;
     }

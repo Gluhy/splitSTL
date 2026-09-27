@@ -131,8 +131,14 @@ const tube = (len, side, wall) => {
   const keep = 3 + 0.5 + 1.2;
   for (const p of ps) {
     const v = verts(p.geometry);
-    const xr = v.filter(q => Math.abs(q.x) > 1e-3 && Math.abs(q.x) < 3.4 && (p.name.startsWith('piece_0') ? q.x > 0 : false));
-    chk(!xr.some(q => Math.abs(q.y) < keep - 1e-3), `${p.name}: x rib stays ${keep} mm off the y seam`);
+    // whatever of the piece is past the x = 0 seam is its rib, whichever side the rib went on
+    const past = p.name.startsWith('piece_0') ? q => q.x > 1e-3 : q => q.x < -1e-3;
+    const xr = v.filter(q => past(q) && Math.abs(q.x) < 3.4);
+    // the rib's end is a 45° ramp: `keep` off the y seam at the cut face, 1 mm more per mm up
+    const worst = Math.min(Infinity, ...xr.map(q => Math.abs(q.y) - keep - Math.abs(q.x)));
+    chk(worst > -1e-3, `${p.name}: rib ends on a 45° ramp, ${keep} mm off the y seam at the face`);
+    const tip = xr.filter(q => Math.abs(q.x) > 2.9);
+    chk(!xr.length || (tip.length && Math.min(...tip.map(q => Math.abs(q.y))) > keep + 2.8), `${p.name}: and the rib's top ends ~3 mm further back than its foot`);
   }
   chk(logs.some(([k, p]) => k === 'log.tongue' && p.n === 2 && p.total === 2), 'both seams got a rib');
 }
