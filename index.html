@@ -45,15 +45,15 @@
               color: #cfe9d8; white-space: nowrap; transform: translateY(-50%); z-index: 5; }
   #ghostTip.bad { color: #ffb4b4; border-color: #7a3030; }
   .desc { display: block; margin-top: 3px; font-size: 10px; line-height: 1.25; color: #6b7785; text-transform: none; letter-spacing: 0; }
-  #pinDiagram { margin-top: 10px; padding: 8px 8px 4px; background: #1a1d22; border: 1px solid #2f343c; border-radius: 6px; }
-  #pinDiagram svg { display: block; width: 100%; height: auto; }
-  #pinDiagram .dim { opacity: .34; transition: opacity .12s; }
-  #pinDiagram .dim.on { opacity: 1; }
-  #pinDiagram .dim text { fill: #9aa3ad; font: 9px system-ui, sans-serif; }
-  #pinDiagram .dim.on text { fill: #ffe066; font-weight: 700; }
-  #pinDiagram .dim line, #pinDiagram .dim path { stroke: #9aa3ad; stroke-width: 1; fill: none; }
-  #pinDiagram .dim.on line, #pinDiagram .dim.on path { stroke: #ffe066; stroke-width: 1.4; }
-  #pinDiagram figcaption { margin: 4px 0 0; font-size: 10px; color: #5c6671; text-align: center; }
+  .jointDiagram { margin-top: 10px; padding: 8px 8px 4px; background: #1a1d22; border: 1px solid #2f343c; border-radius: 6px; }
+  .jointDiagram svg { display: block; width: 100%; height: auto; }
+  .jointDiagram .dim { opacity: .34; transition: opacity .12s; }
+  .jointDiagram .dim.on { opacity: 1; }
+  .jointDiagram .dim text { fill: #9aa3ad; font: 9px system-ui, sans-serif; }
+  .jointDiagram .dim.on text { fill: #ffe066; font-weight: 700; }
+  .jointDiagram .dim line, .jointDiagram .dim path { stroke: #9aa3ad; stroke-width: 1; fill: none; }
+  .jointDiagram .dim.on line, .jointDiagram .dim.on path { stroke: #ffe066; stroke-width: 1.4; }
+  .jointDiagram figcaption { margin: 4px 0 0; font-size: 10px; color: #5c6671; text-align: center; }
 </style>
 </head>
 <body>
@@ -99,7 +99,7 @@
       <span class="desc" data-i18n="spacing.desc">Target gap between pins along one seam.</span></div>
   </div>
 
-  <figure id="pinDiagram" style="margin:10px 0 0">
+  <figure id="pinDiagram" class="jointDiagram" style="margin:10px 0 0">
     <svg viewBox="0 0 300 168" role="img" aria-label="Cross-section of a dowel joint">
       <rect x="6" y="30" width="144" height="112" fill="#252a31" stroke="#3a4049"/>
       <rect x="150" y="30" width="144" height="112" fill="#252a31" stroke="#3a4049"/>
@@ -150,6 +150,44 @@
       <span class="desc" data-i18n="tongueH.desc">How far it reaches into the other piece.</span></div>
     <div></div>
   </div>
+
+  <!-- across the wall, square to the rib: the rib's piece on the left, the groove's on the right -->
+  <figure id="tongueDiagram" class="jointDiagram" style="margin:10px 0 0">
+    <svg viewBox="0 0 300 168" role="img" aria-label="Cross-section of a tongue and groove joint">
+      <rect x="6" y="30" width="144" height="112" fill="#252a31" stroke="#3a4049"/>
+      <rect x="150" y="30" width="144" height="112" fill="#252a31" stroke="#3a4049"/>
+      <polygon points="150,57 208,71.5 208,100.5 150,115" fill="#15171b" stroke="#3a4049"/>
+      <polygon points="150,62 198,74 198,98 150,110" fill="#37d67a"/>
+      <line x1="150" y1="24" x2="150" y2="148" stroke="#ffe066" stroke-dasharray="3 3" opacity=".7"/>
+      <text x="150" y="19" fill="#8b95a1" font-size="9" text-anchor="middle" data-i18n="diagram.seam">seam</text>
+
+      <g class="dim" data-k="tongueW">
+        <line x1="132" y1="62" x2="132" y2="110"/>
+        <line x1="127" y1="62" x2="137" y2="62"/><line x1="127" y1="110" x2="137" y2="110"/>
+        <line x1="132" y1="62" x2="150" y2="62" stroke-dasharray="2 2"/>
+        <line x1="132" y1="110" x2="150" y2="110" stroke-dasharray="2 2"/>
+        <text x="125" y="89" text-anchor="end" data-i18n="tongueW.label">Rib width</text>
+      </g>
+      <g class="dim" data-k="tongueH">
+        <line x1="150" y1="152" x2="198" y2="152"/>
+        <line x1="150" y1="148" x2="150" y2="156"/><line x1="198" y1="148" x2="198" y2="156"/>
+        <line x1="198" y1="98" x2="198" y2="152" stroke-dasharray="2 2"/>
+        <text x="174" y="165" text-anchor="middle" data-i18n="tongueH.label">Rib height</text>
+      </g>
+      <g class="dim" data-k="clearance">
+        <line x1="180" y1="102.5" x2="180" y2="107.5"/>
+        <line x1="176" y1="102.5" x2="184" y2="102.5"/><line x1="176" y1="107.5" x2="184" y2="107.5"/>
+        <line x1="180" y1="105" x2="236" y2="118" stroke-dasharray="2 2"/>
+        <text x="240" y="122" data-i18n="clearance.label">Clearance</text>
+      </g>
+      <g class="dim" data-k="minWall">
+        <line x1="166" y1="30" x2="166" y2="61"/>
+        <line x1="161" y1="30" x2="171" y2="30"/><line x1="161" y1="61" x2="171" y2="61"/>
+        <text x="175" y="49" data-i18n="minWall.label">Min. wall</text>
+      </g>
+    </svg>
+    <figcaption data-i18n="diagram.caption">Hover a field above — clearance exaggerated</figcaption>
+  </figure>
   </div>
 
   <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:10px 0 6px"

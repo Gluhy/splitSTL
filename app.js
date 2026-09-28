@@ -145,12 +145,12 @@ $('lang').value = (() => {
 $('lang').onchange = () => applyLang($('lang').value);
 applyLang($('lang').value);
 
-// ----- joint diagram: hovering a pin setting lights up the dimension it controls -----
+// ----- joint diagrams: hovering a joint setting lights up the dimension it controls -----
+// Clearance and min. wall are shared, so they light up in whichever diagram is showing.
 (function wireDiagram() {
-  const fig = $('pinDiagram'); if (!fig) return;
-  const dims = [...fig.querySelectorAll('.dim')];
+  const dims = [...document.querySelectorAll('.jointDiagram .dim')];
   const light = k => dims.forEach(g => g.classList.toggle('on', g.dataset.k === k));
-  for (const k of ['pinD', 'pinLen', 'clearance', 'minWall', 'spacing']) {
+  for (const k of ['pinD', 'pinLen', 'clearance', 'minWall', 'spacing', 'tongueW', 'tongueH']) {
     const el = $(k), box = el.parentElement;
     for (const ev of ['pointerenter', 'focus']) box.addEventListener(ev, () => light(k), true);
     for (const ev of ['pointerleave', 'blur']) box.addEventListener(ev, () => light(null), true);
