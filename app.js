@@ -7,7 +7,7 @@ import { STLExporter }  from 'three/addons/exporters/STLExporter.js';
 import { zipSync } from 'fflate';
 import { PRESETS } from './presets.js';
 import { t, setLang, getLang, LANGS } from './i18n.js';
-import { planCuts, cutAndConnect, planeKey, dirFromTiltAz, pinFit, fitDiameter, planPlane, MIN_D, HOLE_FIT } from './cutter.js';
+import { planCuts, cutAndConnect, planeKey, dirFromTiltAz, pinFit, fitDiameter, planPlane, flattestRotation, MIN_D, HOLE_FIT } from './cutter.js';
 
 const $ = id => document.getElementById(id);
 const log = (key, p) => { const el = $('log'); if (!el) return; el.textContent += t(key, p) + '\n'; el.scrollTop = 1e9; };
@@ -22,10 +22,11 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.localClippingEnabled = true;   // model section in edit mode (preview the interior)
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15171b);
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 8000);
-camera.position.set(200, 160, 200);
+camera.up.set(0, 0, 1);                 // Z up, as in the STL, the slicer and the exported pieces
+camera.position.set(200, -200, 160);
 const controls = new OrbitControls(camera, canvas);
 scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-const dl = new THREE.DirectionalLight(0xffffff, 0.8); dl.position.set(1, 1.4, 0.8); scene.add(dl);
+const dl = new THREE.DirectionalLight(0xffffff, 0.8); dl.position.set(1, -0.8, 1.4); scene.add(dl);
 const modelGroup = new THREE.Group(), planeGroup = new THREE.Group(),
       pinGroup = new THREE.Group(), arrowGroup = new THREE.Group(), pieceGroup = new THREE.Group();
 scene.add(modelGroup, planeGroup, pinGroup, arrowGroup, pieceGroup);
@@ -91,7 +92,7 @@ function frame(obj) {
   const box = new THREE.Box3().setFromObject(obj); if (box.isEmpty()) return;
   const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
   controls.target.copy(c);
-  camera.position.copy(c).add(new THREE.Vector3(1, 0.8, 1).multiplyScalar(s.length()));
+  camera.position.copy(c).add(new THREE.Vector3(1, -1, 0.8).multiplyScalar(s.length()));
 }
 
 function opts() {
@@ -188,7 +189,7 @@ function dropPlan() {
   [planeGroup, pinGroup, arrowGroup, pieceGroup].forEach(clearGroup);
   S.pins = new Map(); S.activeKey = null; selectPin(null);
   history.past.length = 0; history.future.length = 0;
-  modelGroup.visible = true;
+  modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = pieceGroup.visible = true;   // a mouse turn hid them
   $('cut').disabled = true; $('download').disabled = true;
   setMode('view'); $('editToggle').disabled = true;
 }
@@ -210,6 +211,7 @@ async function loadFile(f) {
     if (rotTool.on) rotTool.set(true);                        // re-attach to the new mesh
     $('modelSize').textContent = sizeText(S.geometry) + ' mm';
     log('log.loaded', { tris: (geo.attributes.position.count / 3).toFixed(0) });
+    if ($('flatOnLoad').checked) layFlat();
   } catch (err) { log('log.loadError', { msg: err.message }); console.error(err); }
 }
 
@@ -236,6 +238,9 @@ $('rotBox').querySelectorAll('button[data-ax]').forEach(b => b.onclick = () => {
   setRotation(turn.multiply(S.rot), 'log.rotated', { axis: 'XYZ'[ax], deg: (deg > 0 ? '+' : '') + deg });   // about the world axis, after the turns so far
 });
 $('rotReset').onclick = () => { if (S.source) setRotation(new THREE.Quaternion(), 'log.rotReset'); };
+// as low as it goes, on its biggest flat, long side along X — see flattestRotation()
+function layFlat() { if (S.source) setRotation(new THREE.Quaternion(...flattestRotation(S.source)), 'log.flat'); }
+$('rotFlat').onclick = layFlat;
 
 // Rotating with the mouse, as in a slicer: rings round the model, drag one to turn it about that
 // axis (the outer one turns it about the view direction, the ball between them freely). The
@@ -732,7 +737,7 @@ function showStats() {
     num;
 }
 function showPieces() {
-  modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = false;
+  modelGroup.visible = planeGroup.visible = pinGroup.visible = arrowGroup.visible = false; pieceGroup.visible = true;
   clearGroup(pieceGroup); S.pieceMeshes = []; S.pieceLabels = []; const list = $('pieceList'); list.innerHTML = ''; showStats();
   S.pieces.forEach((p, i) => {
     const mesh = new THREE.Mesh(p.geometry, new THREE.MeshStandardMaterial({ color: PALETTE[i % PALETTE.length], flatShading: true }));

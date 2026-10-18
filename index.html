@@ -27,7 +27,7 @@
   .rot button { margin: 0; padding: 5px 0; font-size: 12px; }
   .rot input { grid-column: span 3; padding: 5px 8px; }
   .rot #rotReset { grid-column: span 3; }
-  .rot #rotMouse { grid-column: span 6; padding: 7px 0; font-size: 13px; }
+  .rot #rotMouse, .rot #rotFlat { grid-column: span 3; padding: 7px 0; font-size: 13px; }
   .sizes button { width: auto; flex: 1 1 auto; min-width: 34px; padding: 5px 0; margin: 0; font-size: 12px; font-weight: 600; }
   hr { border: none; border-top: 1px solid #262a31; margin: 16px 0; }
   #log { margin-top: 10px; font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: #8b95a1;
@@ -74,6 +74,7 @@
   <label data-i18n="rotate.label" data-i18n-title="rotate.tip">Rotate model</label>
   <div class="rot" id="rotBox" data-i18n-title="rotate.tip">
     <button id="rotMouse" disabled data-i18n="rotate.mouse" data-i18n-title="rotate.mouse.tip">⟳ Rotate with the mouse</button>
+    <button id="rotFlat" disabled data-i18n="rotate.flat" data-i18n-title="rotate.flat.tip">▁ Lay flat</button>
     <button data-ax="0" data-s="-1" disabled>X −</button><button data-ax="0" data-s="1" disabled>X +</button>
     <button data-ax="1" data-s="-1" disabled>Y −</button><button data-ax="1" data-s="1" disabled>Y +</button>
     <button data-ax="2" data-s="-1" disabled>Z −</button><button data-ax="2" data-s="1" disabled>Z +</button>
@@ -82,6 +83,10 @@
   </div>
   <span class="desc" id="modelSize"></span>
   <div class="hint" style="position:static;margin:4px 0 0" data-i18n-html="rotate.hint"></div>
+  <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;color:#e6e8ea;font-size:13px;margin:8px 0 0"
+         data-i18n-title="flatOnLoad.tip">
+    <input type="checkbox" id="flatOnLoad" checked style="width:auto;margin:0"> <span data-i18n="flatOnLoad.label">Lay flat on load</span>
+  </label>
 
   <label data-i18n="printer.label" data-i18n-title="printer.tip">Printer / build volume</label>
   <select id="preset" data-i18n-title="preset.tip"></select>

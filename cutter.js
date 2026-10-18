@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { MeshBVH } from 'three-mesh-bvh';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { ConvexHull } from 'three/addons/math/ConvexHull.js';
 import ManifoldModule from 'manifold-3d';
 
 let wasm = null;
@@ -411,6 +412,80 @@ function materialPoints(sd, lo, hi, axis, coord, opts, halfLen, cuts) {
 }
 
 const cellRoom = (usable, opts) => usable.map(v => v - (opts.connector === 'tongue' ? opts.tongueH : 0));
+// --------------------------------------------------------------------------- //
+// Lay flat: the turn that leaves the model as low as it goes, lying on its biggest flat.
+// The lowest a solid can lie is its narrowest width, and that is (near enough — the exact
+// minimum can also sit between two hull edges) square to one of its convex hull's faces,
+// so every hull face direction is a candidate: the model's extent along it is the height.
+// Of the ones within half a percent of the lowest, the one with the most hull area lying on
+// the bed wins — a car settles on its wheels, not balanced on a mirror. Then it is turned
+// about Z to the smallest footprint (rotating calipers: the tightest rectangle round a convex
+// outline has one side on one of its edges), long side along X.
+
+// A hull vertex is the top or bottom of its column looking along some axis, so on a big mesh
+// only the extremes of a GRID × GRID set of columns along each axis go in — a few hundred
+// thousand points instead of millions (a 3.6M-triangle car took 13 s and 4 GB the long way),
+// each at most one column off the true hull. On that car it lands 2 % above the exact lowest
+// (133.2 mm for 130.7) in 0.4 s; a 1024 grid gets it exact but takes 2.4 s.
+const HULL_ALL = 200000, GRID = 256;
+function hullCandidates(arr) {
+  const n = arr.length / 3, pts = [];
+  if (n <= HULL_ALL) { for (let i = 0; i < n; i++) pts.push(new THREE.Vector3(arr[3 * i], arr[3 * i + 1], arr[3 * i + 2])); return pts; }
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < arr.length; i++) { const a = i % 3; if (arr[i] < lo[a]) lo[a] = arr[i]; if (arr[i] > hi[a]) hi[a] = arr[i]; }
+  const keep = new Set();
+  for (let ax = 0; ax < 3; ax++) {
+    const [u, v] = [0, 1, 2].filter(a => a !== ax);
+    const su = GRID / Math.max(hi[u] - lo[u], 1e-9), sv = GRID / Math.max(hi[v] - lo[v], 1e-9);
+    const mn = new Int32Array(GRID * GRID).fill(-1), mx = new Int32Array(GRID * GRID).fill(-1);
+    for (let i = 0; i < n; i++) {
+      const k = Math.min(GRID - 1, (arr[3 * i + u] - lo[u]) * su | 0) * GRID + Math.min(GRID - 1, (arr[3 * i + v] - lo[v]) * sv | 0);
+      const c = arr[3 * i + ax];
+      if (mn[k] < 0 || c < arr[3 * mn[k] + ax]) mn[k] = i;
+      if (mx[k] < 0 || c > arr[3 * mx[k] + ax]) mx[k] = i;
+    }
+    for (const list of [mn, mx]) for (const i of list) if (i >= 0) keep.add(i);
+  }
+  for (const i of keep) pts.push(new THREE.Vector3(arr[3 * i], arr[3 * i + 1], arr[3 * i + 2]));
+  return pts;
+}
+// Returns the quaternion as [x, y, z, w], in the geometry's own frame.
+export function flattestRotation(geometry) {
+  const hull = new ConvexHull().setFromPoints(hullCandidates(geometry.attributes.position.array));
+  const hv = hull.vertices.map(v => v.point);
+  // coplanar hull faces come out as several triangles: pool them by normal
+  const groups = new Map();
+  for (const f of hull.faces) {
+    const n = f.normal, k = `${n.x.toFixed(4)},${n.y.toFixed(4)},${n.z.toFixed(4)}`;
+    const g = groups.get(k); if (g) g.area += f.area; else groups.set(k, { n: n.clone(), area: f.area });
+  }
+  const cand = [...groups.values()].map(g => {               // g.n points out of the hull: the face sits at max(n·v)
+    let lo = Infinity, hi = -Infinity;
+    for (const p of hv) { const d = g.n.dot(p); if (d < lo) lo = d; if (d > hi) hi = d; }
+    return { ...g, h: hi - lo };
+  });
+  const low = Math.min(...cand.map(c => c.h));
+  const best = cand.filter(c => c.h <= low * 1.005).sort((a, b) => b.area - a.area)[0];
+  const q = new THREE.Quaternion().setFromUnitVectors(best.n, new THREE.Vector3(0, 0, -1));   // that face down onto the bed
+  // footprint: 2D hull of the turned points (monotone chain), then each edge tried as a side
+  const xy = hv.map(p => p.clone().applyQuaternion(q)).map(p => [p.x, p.y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const chain = list => { const h = []; for (const p of list) { while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop(); h.push(p); } h.pop(); return h; };
+  const ring = [...chain(xy), ...chain([...xy].reverse())];
+  let bestA = Infinity, ang = 0, wide = true;
+  for (let i = 0; i < ring.length; i++) {
+    const [ax, ay] = ring[i], [bx, by] = ring[(i + 1) % ring.length], a = Math.atan2(by - ay, bx - ax);
+    const c = Math.cos(-a), s = Math.sin(-a);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [x, y] of ring) { const u = x * c - y * s, v = x * s + y * c; x0 = Math.min(x0, u); x1 = Math.max(x1, u); y0 = Math.min(y0, v); y1 = Math.max(y1, v); }
+    const area = (x1 - x0) * (y1 - y0);
+    if (area < bestA - 1e-9) { bestA = area; ang = -a; wide = x1 - x0 >= y1 - y0; }
+  }
+  if (!wide) ang += Math.PI / 2;                           // long side along X
+  q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), ang));
+  return [q.x, q.y, q.z, q.w];
+}
+
 export async function planCuts(geometry, opts, log = () => {}) {
   await initManifold();
   geometry.computeBoundingBox();
