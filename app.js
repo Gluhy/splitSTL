@@ -180,23 +180,60 @@ DIM.forEach(id => $(id).addEventListener('input', () => {
 }));
 
 // ----- load STL -----
+// Everything planned or cut belongs to one orientation of one model — a new file or a turn
+// of the old one makes it all stale.
+function dropPlan() {
+  S.plan = null; S.pieces = null; $('stats').innerHTML = ''; $('pieceList').innerHTML = ''; $('activePlane').innerHTML = '';
+  [planeGroup, pinGroup, arrowGroup, pieceGroup].forEach(clearGroup);
+  S.pins = new Map(); S.activeKey = null; selectPin(null);
+  history.past.length = 0; history.future.length = 0;
+  modelGroup.visible = true;
+  $('cut').disabled = true; $('download').disabled = true;
+  setMode('view'); $('editToggle').disabled = true;
+}
+const sizeText = geo => { geo.computeBoundingBox(); const v = geo.boundingBox.getSize(new THREE.Vector3()); return [v.x, v.y, v.z].map(x => x.toFixed(1)).join(' × '); };
 async function loadFile(f) {
   try {
     $('log').textContent = ''; log('log.loading', { name: f.name, kb: (f.size / 1024).toFixed(0) });
     const geo = new STLLoader().parse(await f.arrayBuffer());
     if (!geo.attributes.position) throw new Error(t('err.noGeometry'));
     geo.center();
-    S.geometry = geo; S.plan = null; S.pieces = null; $('stats').innerHTML = ''; $('pieceList').innerHTML = '';
-    [modelGroup, planeGroup, pinGroup, arrowGroup, pieceGroup].forEach(clearGroup);   // frees the old model material too
-    S.pins = new Map(); selectPin(null);
+    clearGroup(modelGroup); S.source?.dispose();              // frees the old model material too
+    S.source = geo; S.rot = new THREE.Quaternion(); S.geometry = geo.clone();
+    dropPlan();
     S.modelMat = new THREE.MeshStandardMaterial({ color: 0x6b7785, flatShading: true, side: THREE.DoubleSide });   // DoubleSide -> interior walls visible after sectioning
-    modelGroup.add(new THREE.Mesh(geo, S.modelMat));
+    modelGroup.add(new THREE.Mesh(S.geometry, S.modelMat));
     frame(modelGroup);
-    $('plan').disabled = false; $('cut').disabled = true; $('download').disabled = true;
-    setMode('view'); $('editToggle').disabled = true;
+    $('plan').disabled = false;
+    $('rotBox').querySelectorAll('button').forEach(b => b.disabled = false);
+    $('modelSize').textContent = sizeText(S.geometry) + ' mm';
     log('log.loaded', { tris: (geo.attributes.position.count / 3).toFixed(0) });
   } catch (err) { log('log.loadError', { msg: err.message }); console.error(err); }
 }
+
+// ----- rotate the model -----
+// The cuts run along the printer's axes, so the orientation decides where the seams fall and
+// how many pieces it takes. The turn is baked into the geometry (re-centred, so the cut grid
+// stays around the origin) and always applied to the file as loaded, so a dozen turns don't
+// add up float error.
+function setRotation(q, key, p) {
+  S.rot = q;
+  const geo = S.source.clone().applyQuaternion(q); geo.center();
+  const mesh = modelGroup.children[0], old = mesh.geometry;
+  mesh.geometry = S.geometry = geo; old.dispose();
+  dropPlan(); frame(modelGroup);
+  const size = sizeText(geo);
+  $('modelSize').textContent = size + ' mm';
+  log(key, { ...p, size });
+}
+$('rotBox').querySelectorAll('button[data-ax]').forEach(b => b.onclick = () => {
+  if (!S.source) return;
+  const ax = +b.dataset.ax, deg = +b.dataset.s * (+$('rotAngle').value || 0);
+  if (!deg) return;
+  const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3().setComponent(ax, 1), deg * Math.PI / 180);
+  setRotation(turn.multiply(S.rot), 'log.rotated', { axis: 'XYZ'[ax], deg: (deg > 0 ? '+' : '') + deg });   // about the world axis, after the turns so far
+});
+$('rotReset').onclick = () => { if (S.source) setRotation(new THREE.Quaternion(), 'log.rotReset'); };
 $('file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
 canvas.parentElement.addEventListener('dragover', e => e.preventDefault());
 canvas.parentElement.addEventListener('drop', e => {

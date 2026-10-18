@@ -29,6 +29,7 @@ You found a great big model, but it's taller than your printer. The usual fix �
 ## Features
 
 - **Printer presets** — Bambu Lab (A1 / P1 / X1 / H2D), Prusa, Ender 3, Voron, or a custom build volume.
+- **Rotate the model** — turn it about X / Y / Z by any angle (90° by default) before planning, and see its new size. The cuts always run along the printer's axes, so laying a long part on its side or across the diagonal can take fewer pieces or move a seam off a detail. Reset goes back to the orientation in the file.
 - **Automatic slicing** — splits the model along X/Y/Z so every piece fits the bed (minus margin).
 - **Seams where the part is thickest** (optional) — an even split lands wherever it lands, sometimes right on a waist where no dowel fits at all. Switch it on and each seam slides inside a window around its even position to the cross-section carrying the most material: more glue area, room for fatter dowels, same piece count. Pieces come out less uniform in length, and every one is still checked against the bed.
 - **Dowel joints** — auto-places **perpendicular** pins on each seam so the parts slide together and align. Each pin gets the largest Ø that fits where it is tightest along its whole length; seams too thin for any pin fall back to a flat glue joint. Pins are spread evenly by diameter class, so seams of the same shape get the same joint.

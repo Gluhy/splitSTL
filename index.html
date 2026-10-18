@@ -23,6 +23,10 @@
   button:disabled { opacity: .45; cursor: default; }
   button.on { background: #37d67a; border-color: #37d67a; color: #06210f; }
   .sizes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .rot { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 6px; }
+  .rot button { margin: 0; padding: 5px 0; font-size: 12px; }
+  .rot input { grid-column: span 3; padding: 5px 8px; }
+  .rot #rotReset { grid-column: span 3; }
   .sizes button { width: auto; flex: 1 1 auto; min-width: 34px; padding: 5px 0; margin: 0; font-size: 12px; font-weight: 600; }
   hr { border: none; border-top: 1px solid #262a31; margin: 16px 0; }
   #log { margin-top: 10px; font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: #8b95a1;
@@ -65,6 +69,16 @@
 
   <label data-i18n="file.label" data-i18n-title="file.tip" title="Load a watertight STL. You can also drag &amp; drop it onto the 3D view.">STL file</label>
   <input type="file" id="file" accept=".stl" data-i18n-title="file.tip">
+
+  <label data-i18n="rotate.label" data-i18n-title="rotate.tip">Rotate model</label>
+  <div class="rot" id="rotBox" data-i18n-title="rotate.tip">
+    <button data-ax="0" data-s="-1" disabled>X −</button><button data-ax="0" data-s="1" disabled>X +</button>
+    <button data-ax="1" data-s="-1" disabled>Y −</button><button data-ax="1" data-s="1" disabled>Y +</button>
+    <button data-ax="2" data-s="-1" disabled>Z −</button><button data-ax="2" data-s="1" disabled>Z +</button>
+    <input type="number" id="rotAngle" value="90" step="15" min="-360" max="360" data-i18n-title="rotate.angle">
+    <button id="rotReset" disabled data-i18n="rotate.reset" data-i18n-title="rotate.reset.tip">Reset</button>
+  </div>
+  <span class="desc" id="modelSize"></span>
 
   <label data-i18n="printer.label" data-i18n-title="printer.tip">Printer / build volume</label>
   <select id="preset" data-i18n-title="preset.tip"></select>
