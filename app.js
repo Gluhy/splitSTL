@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { STLLoader }    from 'three/addons/loaders/STLLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { STLExporter }  from 'three/addons/exporters/STLExporter.js';
 import { zipSync } from 'fflate';
 import { PRESETS } from './presets.js';
@@ -206,6 +207,7 @@ async function loadFile(f) {
     frame(modelGroup);
     $('plan').disabled = false;
     $('rotBox').querySelectorAll('button').forEach(b => b.disabled = false);
+    if (rotTool.on) rotTool.set(true);                        // re-attach to the new mesh
     $('modelSize').textContent = sizeText(S.geometry) + ' mm';
     log('log.loaded', { tris: (geo.attributes.position.count / 3).toFixed(0) });
   } catch (err) { log('log.loadError', { msg: err.message }); console.error(err); }
@@ -216,12 +218,12 @@ async function loadFile(f) {
 // how many pieces it takes. The turn is baked into the geometry (re-centred, so the cut grid
 // stays around the origin) and always applied to the file as loaded, so a dozen turns don't
 // add up float error.
-function setRotation(q, key, p) {
+function setRotation(q, key, p, reframe = true) {
   S.rot = q;
   const geo = S.source.clone().applyQuaternion(q); geo.center();
   const mesh = modelGroup.children[0], old = mesh.geometry;
   mesh.geometry = S.geometry = geo; old.dispose();
-  dropPlan(); frame(modelGroup);
+  dropPlan(); if (reframe) frame(modelGroup);
   const size = sizeText(geo);
   $('modelSize').textContent = size + ' mm';
   log(key, { ...p, size });
@@ -234,6 +236,58 @@ $('rotBox').querySelectorAll('button[data-ax]').forEach(b => b.onclick = () => {
   setRotation(turn.multiply(S.rot), 'log.rotated', { axis: 'XYZ'[ax], deg: (deg > 0 ? '+' : '') + deg });   // about the world axis, after the turns so far
 });
 $('rotReset').onclick = () => { if (S.source) setRotation(new THREE.Quaternion(), 'log.rotReset'); };
+
+// Rotating with the mouse, as in a slicer: rings round the model, drag one to turn it about that
+// axis (the outer one turns it about the view direction, the ball between them freely). The
+// mesh only turns while dragging; on release the turn is baked like a button press. Snaps to
+// 15° unless Shift is held — square-on angles are the ones that usually save a piece.
+const SNAP = THREE.MathUtils.degToRad(15);
+const rotTool = (() => {
+  const tc = new TransformControls(camera, canvas);
+  tc.setMode('rotate'); tc.setSpace('world'); tc.setRotationSnap(SNAP);
+  scene.add(tc);
+  const tip = $('ghostTip'), at = { x: 0, y: 0 };
+  let shown = null;                                            // what was on screen before the drag
+  canvas.addEventListener('pointermove', e => { at.x = e.offsetX; at.y = e.offsetY; });
+  const angle = () => {                                        // signed about the dragged axis
+    const q = tc.object.quaternion, deg = THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(q.w))));
+    const ax = 'XYZ'.indexOf(tc.axis), comp = ax >= 0 ? [q.x, q.y, q.z][ax] * Math.sign(q.w || 1) : 1;
+    return { axis: ax >= 0 ? tc.axis : '—', deg: Math.round(deg * 10) / 10 * (comp < 0 ? -1 : 1) };
+  };
+  tc.addEventListener('dragging-changed', e => {
+    controls.enabled = !e.value;
+    const mesh = tc.object; if (!mesh) return;
+    if (e.value) {                                             // the cut plan is about to go stale: show just the model
+      shown = [modelGroup, planeGroup, pinGroup, arrowGroup, pieceGroup].map(g => [g, g.visible]);
+      modelGroup.visible = true; planeGroup.visible = pinGroup.visible = arrowGroup.visible = pieceGroup.visible = false;
+      return;
+    }
+    tip.style.display = 'none';
+    if (Math.abs(Math.abs(mesh.quaternion.w) - 1) < 1e-9) {    // pressed a ring, didn't turn it
+      shown?.forEach(([g, v]) => g.visible = v); return;
+    }
+    const { axis, deg } = angle();
+    const q = mesh.quaternion.clone().multiply(S.rot); mesh.quaternion.identity();
+    setRotation(q, 'log.rotated', { axis, deg: (deg > 0 ? '+' : '') + deg }, false);   // keep the camera where the user put it
+  });
+  tc.addEventListener('objectChange', () => {
+    const { axis, deg } = angle();
+    tip.classList.remove('bad'); tip.style.display = 'block';
+    tip.style.left = (at.x + 16) + 'px'; tip.style.top = at.y + 'px';
+    tip.textContent = `${axis} ${deg > 0 ? '+' : ''}${deg.toFixed(1)}°`;
+  });
+  return {
+    get on() { return !!tc.object; },
+    busy() { return tc.dragging || (tc.object && tc.axis !== null); },   // the pointer is on (or dragging) a ring
+    set(on) {
+      on = on && !!S.source;
+      if (on) { if (S.mode === 'edit') setMode('view'); tc.attach(modelGroup.children[0]); } else tc.detach();
+      $('rotMouse').classList.toggle('on', on);
+    },
+    snap(free) { tc.setRotationSnap(free ? null : SNAP); },
+  };
+})();
+$('rotMouse').onclick = () => rotTool.set(!rotTool.on);
 $('file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
 canvas.parentElement.addEventListener('dragover', e => e.preventDefault());
 canvas.parentElement.addEventListener('drop', e => {
@@ -457,6 +511,7 @@ $('pinD').addEventListener('input', () => { paintSizes(); refreshGhost(); });
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), planeMath = new THREE.Plane();
 function setMode(mode) {
   S.mode = mode;
+  if (mode === 'edit' && rotTool.on) rotTool.set(false);
   $('editToggle').textContent = t(mode === 'edit' ? 'edit.on' : 'edit.off');
   $('editToggle').classList.toggle('on', mode === 'edit');
   canvas.style.cursor = mode === 'edit' ? 'crosshair' : 'default';
@@ -508,7 +563,7 @@ function redo() { if (!history.future.length) return; history.past.push(snapshot
 const DRAG_PX = 4;
 let press = null;
 canvas.addEventListener('pointerdown', e => {
-  if (!S.plan || e.button !== 0) return;
+  if (!S.plan || e.button !== 0 || rotTool.busy()) return;
   pickNDC(e);
   press = { x: e.offsetX, y: e.offsetY, moved: false, kind: null };
   if (S.mode === 'edit') {
@@ -572,10 +627,14 @@ addEventListener('keydown', e => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
   if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if ((e.key === 'y' || e.key === 'Y') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); redo(); return; }
+  if (e.key === 'Shift') rotTool.snap(true);
   if (typing) return;
-  if (e.key === 'Escape') { selectPin(null); ghost.hide(); return; }
+  if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) { rotTool.set(!rotTool.on); return; }
+  if (e.key === 'Escape') { selectPin(null); ghost.hide(); rotTool.set(false); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && S.selected) { e.preventDefault(); mark(); removePin(S.selected); }
 });
+
+addEventListener('keyup', e => { if (e.key === 'Shift') rotTool.snap(false); });
 
 // ----- dragging a cut plane -----
 // The even split is rarely where you want the seam; drag it into a crease or off a detail.
